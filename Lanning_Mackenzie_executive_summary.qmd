@@ -1,0 +1,251 @@
+---
+title: "Predicting Air Quality in India"
+subtitle: "A regression prediction problem based on air quality data in various cities throughout India"
+author: "Mackenzie Lanning"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+    
+execute:
+  echo: false
+  warning: false
+
+from: markdown+emoji 
+---
+
+::: {.callout-tip icon=false}
+
+## Github Repo Link
+
+[Lanning_Mackenzie_Final_Report](https://github.com/stat301-2-2025-winter/final-project-2-MLanning314)
+
+:::
+
+```{r}
+#| label: load-packages
+#| echo: false
+library(tidymodels)
+library(tidyverse)
+library(here)
+```
+
+```{r}
+#| label: load-fitted-results
+#| echo: false
+#| results: hide
+list.files(
+  here("results/"),
+  pattern = ".rda",
+  full.names = TRUE
+) |>
+  map(load, envir = .GlobalEnv)
+
+```
+
+
+## Overview
+Air pollution is one of the most urgent global challenges of the 21st century, significantly impacting both the environment and public health. As urbanization expands, air quality has deteriorated, with the World Health Organization (WHO) estimating that around 7 million people die annually from air pollution, and 99% of the world breathes air exceeding safe limits^[World Health Organization. (2025). *Air Pollution*. World Health Organization Health Topics. [https://www.who.int/health-topics/air-pollution#tab=tab_1](https://www.who.int/health-topics/air-pollution#tab=tab_1)]. This crisis disproportionately affects developing nations, with India ranking among the most polluted countries due to factors like population density, industrial emissions, vehicular pollution, agricultural burning, and construction^[Brooke, Ethan. (2024 January 17). *Air Pollution in India: A Deep Dive into Causes, Effects, and Solutions*. BreatheSafeAir. [https://breathesafeair.com/air-pollution-in-india/](https://breathesafeair.com/air-pollution-in-india/)]. Major cities such as Delhi and Mumbai experience severe air pollution, particularly in winter, exacerbated by climate change, which alters weather patterns and pollutant dispersion. The Air Quality Index (AQI) is a critical metric for assessing pollution levels based on harmful pollutants like PM2.5, NO₂, and O₃, with high values linked to severe health risks and economic costs. 
+
+This project aims to predict AQI levels using various airborne pollutant data to help individuals and policymakers make informed decisions. By leveraging an Air Quality Dataset from Kaggle^[Vopani. (2020). *Air Quality Data in India (2015 - 2020)*. Kaggle. [https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india/code?datasetId=630055](https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india/code?datasetId=630055)], I will develop predictive models to determine the most effective approach for forecasting AQI levels and mitigating the adverse effects of air pollution.
+
+
+## Key Aspects of the Methodology
+### Data Splitting and Folding
+An 80/20 initial split was applied, followed by v-fold cross-validation with 10 folds and 5 repeats, to generate the training sub-dataset used for model evaluation and selection.
+
+### Exploratory Data Analysis for Feature Engineering
+An EDA was conducted to look for potential skewed distributions of predictor variables and relationships between predictor variables. This was done with the goal of improving the recipe and, thus, model accuracy by explicitly stating relationships between predictors that the model may otherwise miss. There were 5 interactions that were deemed significant to include and mention in our recipe building, including:
+
+- small and large particulate matter
+- the concentration of nitrogen monoxide, the concentration of nitrogen dioxide, and the concentration of nitrous oxides
+- the concentration of sulfur dioxide and the concentration of carbon monoxide 
+- the concentration of benzene and the concentration of toluene
+- the concentration of ground ozone and the concentration of nitrogen dioxide
+
+### Recipe Creation
+4 main recipes were created, with 2 of these recipes having different variations for parametric and nonparametric models.
+
+- Null Recipe, which was only used for the null model
+- Baseline Recipe, which was only used for the simple linear regression model
+- Linear Regression Recipe, which had 2 variants: one using feature engineering and one without feature engineering. These were used for the ridge models and elastic net models
+- Tree Recipe, which had 2 variants: one using feature engineering and one without feature engineering. These were used for the nearest neighbor models, the random forest models, and the boosted tree models
+
+The null, baseline, and simple linear regression recipes utilize only the steps needed to have the recipe work and the model run. These steps included removing variables, imputing missing values for nominal and numeric predictors, dummying variables, and removing zero variance variables.
+
+The main feature engineering/difference between the simple and feature engineering recipes was the implementation of interaction terms for the parametric (logistic and elastic net) models, and the categorical grouping of some of the numerical variable for the non parametric models.
+
+### Model Types
+7 types of models were fitted and compared - hyperparameters were also tuned if necessary for specific models.
+
+- Null
+- Baseline simple linear regression
+- Ridge (tuned the following hyperparameters: penalty)
+- Elastic Net (tuned the following hyperparameters: penalty and mixture)
+- K-Nearest Neighbors (tuned the following hyperparameters: neighbors)
+- Random Forest (tuned the following hyperparameters: trees, mtry - the number of randomly selected predictors, and min_n - minimal node size)
+- Boosted Tree (tuned the following hyperparameters: trees, learn rate, mtry - the number of randomly selected predictors, and min_n - minimal node size)
+
+More details on the levels and ranges of tuning can be found in the final report.
+
+### Tuning Analysis
+For the models where tuning was necessary, the best hyperparameters can be found in the tables below. More detailed information on the best tuning hyperparameters can be found in the final report.
+
+```{r}
+#| label: tbl-ridge-hyperparameters
+#| tbl-cap: "Best Hyperparameter Values for Ridge Regression Models"
+#| echo: false
+
+# ridge model
+ridge_best <- select_best(ridge_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Linear Regression")
+# penalty = 1e-10
+
+# ridge model with feature engineering
+ridge_fe_best <- select_best(ridge_tuned_2, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# penalty = 1e-10
+
+bind_rows(ridge_best, ridge_fe_best) |>
+  knitr::kable(col.names = c("Penalty", "Recipe"))
+```
+
+```{r tbl-elastic-hyperparameters}
+#| label: tbl-elastic-hyperparameters
+#| tbl-cap: "Best Hyperparameter Values for Elastic Net Models"
+#| echo: false
+
+# elastic model
+elastic_best <- select_best(elastic_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Linear Regression")
+# penalty: 1e10, mixture: 0.288
+
+# elastic model with feature engineered recipe
+elastic_fe_best <- select_best(elastic_tuned_2, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# penalty: 1e10, mixture: 0.288
+
+# create a table for the elastic net model hyperparameters
+bind_rows(elastic_best, elastic_fe_best) |>
+  knitr::kable(col.names = c("Penalty", "Mixture", "Recipe"))
+```
+
+```{r tbl-kknn-hyperparameters}
+#| label: tbl-kknn-hyperparameters
+#| tbl-cap: "Best Hyperparameter Values for Nearest Neighbor Models"
+#| echo: false
+
+#nearest neighbor
+kknn_best <- select_best(kknn_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Tree")
+# neighbors = 15
+
+# nearest neighbor with feature engineering
+kknn_fe_best <- select_best(kknn_tuned, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# neighbors = 15
+
+bind_rows(kknn_best, kknn_fe_best) |>
+  knitr::kable(col.names = c("Neighbors", "Recipe"))
+```
+
+```{r tbl-rf-hyperparameters}
+#| label: tbl-rf-hyperparameters
+#| echo: false
+#| tbl-cap: "Best Hyperparameter Values for Random Forest Models"
+
+# random forest
+rf_best <- select_best(rf_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Tree")
+# mtry = 10, trees = 500, min_n = 2
+
+# random forest with feature engineering
+rf_fe_best <- select_best(rf_tuned_2, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# mtry = 10, trees = 437, min_n = 2
+
+# create a table for the random forest model hyperparameters
+bind_rows(rf_best, rf_fe_best) |>
+  knitr::kable(col.names = c("Randomly Selected Predictors", "Trees", "Minimum Node Size",
+                             "Recipe"))
+```
+
+```{r tbl-bt-hyperparameters}
+#| label: tbl-bt-hyperparameters
+#| echo: false
+#| tbl-cap: "Best Hyperparameter Values for Boosted Tree Models"
+
+# boosted tree
+bt_best <- select_best(bt_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Tree")
+# mtry = 10, trees = 500, min_n = 11, learn rate = 0.0398
+
+# boosted tree with feature engineering
+bt_fe_best <- select_best(bt_tuned_2, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# mtry = 10, trees = 437, min_n = 11, learn rate = 0.398
+
+# create a table for the boosted tree model hyperparameters
+bind_rows(bt_best, bt_fe_best) |>
+  knitr::kable(col.names = c("Randomly Selected Predictors", "Trees", "Minimum Node Size",
+                             "Learn Rate", "Recipe"))
+
+```
+
+
+## Best Performing Models
+Below in @tbl-model-results-table is the mean RSQ and standard error for the best performing models of each model type and recipe combination.
+```{r tbl-model-resuls-table}
+#| label: tbl-model-results-table
+#| echo: false
+#| tbl-cap: "Average RSQ Value and Standard Error for Each Model"
+
+model_results_table |>
+  arrange(desc(mean)) |>
+  knitr::kable(col.names = c("Mean", "n", "Standard Error", "Model", "Recipe"))
+
+```
+
+The random forest model with the simple tree recipe had the highest mean RSQ with a value of 0.973, and had a standard error of 0.000189. This specific random forest model has a minimal node size of 2 (min_n), 500 trees, and 10 randomly selected predictors (mtry).
+
+Many other models had a similar RSQ value, and therefore a similar prediction accuracy, as almost every model had a mean RSQ above 0.95, with the exception of my ridge models.
+
+My baseline model performed very well, with a mean ROC AUC of 0.953, but the random forest with the simple tree recipe still wins, as the increase in RSQ value outweights the additional computational time it may incur due to complexity. 
+
+## Final Model Analysis
+By training this winning random forest model on the entire training dataset, and then assessing it on the testing data, I got an RSQ value of 0.974. This is marginally better/about the same as the mean RSQ I got for this model across the folds (0.973).
+
+```{r tbl-final-model-prediction-sqrt}
+#| label: tbl-final-model-prediction-sqrt
+#| echo: false
+#| tbl-cap: "Different Assessment Metric Values of the Final Model for Predicting Square-Root Air Quality Index"
+air_predict_table |>
+  knitr::kable(col.names = c("Assessment Metric", "Estimator", "Estimate"))
+
+```
+
+Using @tbl-final-model-prediction-sqrt, we can see how well the model performs on predicting the square-root transformed AQI values using different performance metrics. RMSE measures the average error magnitude between predicted and actual values - a lower RMSE indicates better predictive performance. On average, my model deviates from the actual value by 0.621, which is around 2.78% of the total range for air quality index value. The RSQ value of 0.974 is better than any of the models we see in @tbl-model-results-table. This means that the final random forest model has the highest predictive accuracy of all the models and can explain 97.4% of the variance in the data - this is very high, suggesting an excellent fit. The mean absolute error (MAE) measures the average absolute difference between predicted and actual values. Unlike RMSE, MAE does not square errors, so it is less sensitive to large outliers, which can make it a better measure of error in the model. 
+
+The MAE shows that, on average, the model has a difference of 0.471 units for square-root transformed air quality index values - this is around 2.11% of the total range for air quality index value, which is better than the RMSE estimate. When comparing MAE to RMSE, we see that RMSE is larger than MAE, which indicates some larger errors exist because RMSE penalizes larger errors more. Mean absolute percentage error (MAPE) measures the average percentage error between predicted and actual values - lower values indicate better predictive accuracy. A MAPE of 4.21% means my model's predictions are, on average, within 4.21% of the actual AQI values. This is a very low error percentage, suggesting that my model does a good job of predicting the values for air quality index. Overall, these assessment metrics demonstrate great performance from my final model and I am confident my model can predict air quality index with relative accuracy.
+
+![Prediction accuracy for our final model on the square-root scale](figures/final_model_analysis_plot.jpg){#fig-fma}
+
+@fig-fma reiterates the assessment metrics, as we see the observations staying close to the prediction line of best fit. This means that the model does a good job of predicting the actual air quality index value found in the data.
+
+## Conclusion
+Through this project, I have gained valuable insights into model building, feature engineering, and balancing complexity with performance when selecting the best model. My random forest model using the simple tree recipe emerged as the best-performing model based on RSQ, the assessment metric I used for evaluation. Other strong contenders included the random forest model with my feature engineering tree recipe and both boosted tree models, reinforcing the effectiveness of tree-based approaches observed throughout the quarter.
+
+Interestingly, while both random forest and boosted tree models performed slightly better with the simple tree recipe, the best hyperparameter combinations remained consistent across recipes. This suggests that the categorical transformation of numerical variables in my feature engineering recipe may not have had as much impact as anticipated, particularly given the skewed distribution of some predictors in the dataset. Conversely, my parametric models — logistic regression and elastic net — performed better with the feature engineering recipe, indicating that the interaction terms introduced between correlated variables likely increased prediction accuracy. My baseline simple linear regression model also performed reasonably well, achieving a mean RSQ close to the tree-based models. However, because the computational demand of my best random forest model was not too extreme, I opted to prioritize the increase in RSQ over the simplicity of the baseline model despite its efficiency. 
+
+While the findings in this report provide a strong foundation, they represent only the initial stage of model development and analysis. Future improvements could include refining hyperparameter tuning with different ranges or levels and designing additional recipes that emphasize specific variable impacts, interactions, or categorical transformations. These refinements require time, but I look forward to exploring this project more in the future.
+
+Thank you for reading!
+
+## References
+Brooke, Ethan. (2024 January 17). *Air Pollution in India: A Deep Dive into Causes, Effects, and Solutions*. BreatheSafeAir. [https://breathesafeair.com/air-pollution-in-india/︎](https://breathesafeair.com/air-pollution-in-india/)
+
+Vopani. (2020). *Air Quality Data in India (2015 - 2020)*. Kaggle. [https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india/code?datasetId=630055](https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india/code?datasetId=630055)
+
+
+World Health Organization. (2025). *Air Pollution*. World Health Organization Health Topics. [https://www.who.int/health-topics/air-pollution#tab=tab_1](https://www.who.int/health-topics/air-pollution#tab=tab_1)

@@ -1,0 +1,801 @@
+---
+title: "Predicting Air Quality in India"
+subtitle: "A regression prediction problem based on air quality data in various cities throughout India"
+author: "Mackenzie Lanning"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+    
+execute:
+  echo: false
+  warning: false
+
+from: markdown+emoji 
+---
+
+::: {.callout-tip icon=false}
+
+## Github Repo Link
+
+[Lanning_Mackenzie_Final_Report](https://github.com/stat301-2-2025-winter/final-project-2-MLanning314)
+
+:::
+
+```{r}
+#| label: load-packages
+#| echo: false
+library(tidyverse)
+library(tidymodels)
+library(here)
+library(naniar)
+library(corrplot)
+```
+
+```{r}
+#| label: load-data
+#| echo: false
+air_data <- read_csv("data/city_day.csv")
+air_clean <- read_csv("data/air_clean.csv")
+load(here("data_splits/air_training.rda"))
+load(here("data_splits/air_testing.rda"))
+```
+
+
+```{r}
+#| label: load-functions
+#| echo: false
+
+#create a function for correlation graphs (generative AI was used to help me construct this function)
+create_correlation_graph <- function(data, target_var) {
+  # select numeric columns in the dataset
+  numeric_data <- data |>
+    select(where(is.numeric))
+  
+  # calculate correlations with the target variable
+  correlation_df <- numeric_data |>
+    summarise(across(everything(), ~ cor(.x, numeric_data[[target_var]], use = "complete.obs"))) |>
+    pivot_longer(cols = everything(), names_to = "variable", values_to = "correlation") |>
+    filter(variable != target_var)  # exclude the target variable itself
+  
+  # create the ggplot object
+  plot <- ggplot(correlation_df, aes(x = reorder(variable, correlation), y = correlation, fill = correlation)) +
+    geom_bar(stat = "identity") +
+    coord_flip() +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+    theme_minimal() +
+    labs(
+      title = paste("Correlation with", target_var),
+      x = "Variables",
+      y = "Correlation Coefficient"
+    ) +
+    theme(legend.position = "none")
+  
+  # return the plot object
+  return(plot)
+}
+```
+
+```{r}
+#| label: load-fitted-models
+#| echo: false
+load(here("results/fit_null.rda"))
+load(here("results/fit_baseline.rda"))
+load(here("results/ridge_tuned.rda"))
+load(here("results/ridge_tuned_2.rda"))
+load(here("results/elastic_tuned.rda"))
+load(here("results/elastic_tuned_2.rda"))
+load(here("results/kknn_tuned.rda"))
+load(here("results/kknn_tuned_2.rda"))
+load(here("results/rf_tuned.rda"))
+load(here("results/rf_tuned_2.rda"))
+load(here("results/bt_tuned.rda"))
+load(here("results/bt_tuned_2.rda"))
+load(here("results/final_fit.rda"))
+```
+
+```{r}
+#| label: load-objects
+#| echo: false
+
+load(here("results/model_results_table.rda"))
+load(here("results/air_predict_table.rda"))
+load(here("results/air_predict_table_aqi.rda"))
+```
+
+
+## Introduction
+Air pollution has quickly become one of the most pressing challenges of the 21st century, as it has a detrimental effect on the environment and public health. As urbanization continues expanding to meet the growing demands of the human population, air quality in many areas of the world has decreased significantly, posing severe health risks to countless people. According to the World Health Organization (WHO), around 7 million people each year die from air pollution and 99% of the world breathes air that exceeds WHO guideline limits^[World Health Organization. (2025). *Air Pollution*. World Health Organization Health Topics. [https://www.who.int/health-topics/air-pollution#tab=tab_1](https://www.who.int/health-topics/air-pollution#tab=tab_1)]. This issue disproportionately impacts developing nations and low-income areas of the world often suffer most from high exposure to air pollutants. Among these, India ranks among the most polluted countries globally, with several of its cities consistently appearing on the list of the world’s most polluted urban areas^[IQAir. (2023). *World's most polluted countries & regions*. IQAir Historical Rankings. [https://www.iqair.com/us/world-most-polluted-countries](https://www.iqair.com/us/world-most-polluted-countries)].
+
+India's poor air quality is driven by a variety of factors including, population density, industrial emissions, vehicular output, agricultural burning, and constant construction^[Brooke, Ethan. (2024 January 17). *Air Pollution in India: A Deep Dive into Causes, Effects, and Solutions*. BreatheSafeAir. [https://breathesafeair.com/air-pollution-in-india/](https://breathesafeair.com/air-pollution-in-india/)]. Major cities like Delhi, Mumbai, Kolkata, and Bengaluru experience recurring episodes of severe air pollution, particularly in winter when weather conditions such as temperature inversions trap pollutants close to the ground. To put this in perspective, New Delhi has more days at hazardous levels of pollution than it does at safe levels. Climate change further exacerbates the issue by altering weather patterns, wind speeds, and temperature fluctuations that impacts how pollution is dispersed throughout the country. Additionally, rising temperatures can increase the formation of airborne pollutants and the fluctuation in precipitation rate affects the removal of pollutants from the atmosphere.
+
+The Air Quality Index (AQI) serves as a standardized metric for assessing and communicating air pollution levels based on the concentration of harmful pollutants such as particulate matter (PM2.5, PM10), nitrogen dioxide (NO₂), sulfur dioxide (SO₂), carbon monoxide (CO), and ozone (O₃)^[Minnesota Pollution Control Agency. (2025). *Understanding the air quality index (AQI)*. Air Quality for Minnesota Pollution Control Agency. [https://www.pca.state.mn.us/air-water-land-climate/understanding-the-air-quality-index-aqi#:~:text=The%20AQI%20is%20calculated%20by,National%20Ambient%20Air%20Quality%20Standards](https://www.pca.state.mn.us/air-water-land-climate/understanding-the-air-quality-index-aqi#:~:text=The%20AQI%20is%20calculated%20by,National%20Ambient%20Air%20Quality%20Standards)]. High AQI levels are associated with a range of adverse health effects, including respiratory diseases, cardiovascular problems, and reduced life expectancy^[Colorado Clean Energy Fund. (2024 August 12). *Air Quality Index Explained: How AQI Affects Our Environment*. CCEF. [https://cocleanenergyfund.com/air-quality-index-explained/?gad_source=1&gclid=Cj0KCQiA_Yq-BhC9ARIsAA6fbAj0ENYIF5gyUvt85jLikqwa0dWUoeIEuG4voEhjxbtCk_kn_7UApRwaAo-TEALw_wcB](https://cocleanenergyfund.com/air-quality-index-explained/?gad_source=1&gclid=Cj0KCQiA_Yq-BhC9ARIsAA6fbAj0ENYIF5gyUvt85jLikqwa0dWUoeIEuG4voEhjxbtCk_kn_7UApRwaAo-TEALw_wcB)]. Vulnerable populations, such as children, the elderly, and individuals with pre-existing conditions, are particularly at risk. Air pollution also has economic consequences, contributing to lost productivity, increased healthcare costs, and environmental degradation. The goal of this project aims to predict AQI levels when given various airborne pollutants to help people make informed decisions and reduce the adverse effects of poor air quality. Using an Air Quality Dataset found on Kaggle^[Vopani. (2020). *Air Quality Data in India (2015 - 2020)*. Kaggle. [https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india/code?datasetId=630055](https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india/code?datasetId=630055)], I plan to build various prediction models to determine which is best at predicting the AQI to accomplish these goals. 
+
+## Data Overview
+### Raw Data
+The raw dataset found on Kaggle contains 29,531 observations of 16 variables. There is significant missingness in all variables found in this dataset. As seen in @fig-missingnessraw, every variable has a degree of missingness besides the city in which the data was taken and the date the data was collected. Specifically, the concentration of xylene and large particulate matter were missing more than half their values, making them unsuitable predictors.
+
+### Target Variable Analysis
+For the purposes of my prediction problem, we will be focusing on the numeric value for air quality index (AQI). This is a continuous variable that operates on a scale of 0-500, with 0 being incredibly clean air and 500 being unbreathable air. 
+
+First, I examined the missingness in the target variable to see the percentage of observations that were absent from the dataset - with prediction modeling, missing values for the target variable are a big problem, so I wanted to address it immediately. @tbl-missingness-tv-raw shows us there are exactly 4681 missing values for air quality index, which is around 16% of the observations. This is relatively significant, and will need to be dealt with in the cleaning process before proceeding to the modeling process. @fig-missingnesstvraw is another way to visualize the missingness in my target variable - it is significant, but can be addressed in the data cleaning process. Something interesting to note is that the highest value for AQI is 2049, which is impossible as the highest value on the scale is 500, so I will need to filter out any values above 500.
+
+```{r tbl-missingness-tv-raw}
+#| label: tbl-missingness-tv-raw
+#| echo: false
+#| tbl-cap: "Missingness for Air Quality Index Values (AQI)"
+
+# I used skimr::skim_without_charts(air_data$aqi) to get this information
+
+missing_tv_table <- tibble(
+  skim_variable = "data",
+  n_missing = 4681,
+  complete_rate = 0.841,
+  mean = 166,
+  sd = 141,
+  p0 = 13,
+  p25 = 81,
+  p50 = 118,
+  p75 = 208,
+  p100 = 2049
+)
+
+missing_tv_table |>
+  select(-skim_variable) |>
+  knitr::kable(col.names = c("Missing Values", "Completion Rate", "Mean", "Standard Deviation", "p0", "p25", "p50", "p75", "p100"))
+```
+![Proportion of missing observations for air quality index (my target variable)](figures/missing_tv_graph.jpg){#fig-missingnesstvraw}
+
+Next, I explored the distribution of the air quality index values in the dataset. Ideally for a prediction model, there will be a symmetric distribution of a regression variable to avoid any bias. However, in @fig-tvdistribution, we see that the target variable has a pretty significant right skew. 
+
+![Distribution of air quality index values in the raw dataset](figures/tv_distribution.jpg){#fig-tvdistribution}
+
+This distribution led me to the conclusion that a transformation would be necessary to improve the symmetry. I chose a square root transformation as this is best for data with a right tail and no zero or negative values, which fits my dataset. @fig-sqrttvdistribution shows that this transformation centers the data and makes it much more suitable for the modeling process. Although, there is still a slight right tail, the boxplot does a better job of sowing the centering of the data. 
+
+![Distribution of air quality index values in the raw dataset with a square root transformation](figures/sqrt_tv_distribution.jpg){#fig-sqrttvdistribution}
+
+I also explored a logarithmic transformation, but as seen in @fig-logtvdistribution, this does a slightly worse job of alleviating the skew, as most of the data is on the left side of the graph. The log transformation also causes the distribution to become more bimodal, which can cause complications with the models. While I think either transformation would be suitable, I chose the square root transformation becuase I felt it accomplished the task best. 
+
+![Distribution of air quality index values in the raw dataset with a log transformation](figures/log_tv_distribution.jpg){#fig-logtvdistribution}
+
+Finally, before cleaning the dataset, I wanted to see if any of the predictors were too highly correlated with the outcome variable. This could lead to an issue called multicollinearity, which causes the model to have incredibly high accuracy becuase of the relationship between the predictor and the target variable. I created a correlation matrix and then visualized it using a plot to determine if certain predictors need to be removed. The full matrix can be found in @tbl-correlation-matrix, but for readability, I will only provide the visual plot in this section, as seen in @fig-correlation-visualization
+
+```{r fig-correlation-visualization}
+#| label: fig-correlation-visualization
+#| echo: false
+#| fig-cap: "The correlation of different predictors in the dataset to the target variable, air quality index (AQI)"
+correlation_matrix <- cor(air_data %>% select(where(is.numeric)), use = "complete.obs")
+corrplot(correlation_matrix, method = "color", type = "upper", tl.cex = 0.8, order = "hclust")
+```
+This plot shows us that every variable is below 0.6 except for the variables for large and small particulate matter concentration. These variables are very highly correlated to the outcome variable and play a large role in determining the value for the air quality index. I do not plan on directly removing them during the cleaning process, but rather creating models with and without these predictors and comparing the accuracy of the models to see if there is a significant impact. The other predictors should be fine for the modeling process and not cause significant multicollinearity issues. 
+
+### Clean Data
+After conducting an analysis of the target variable, I used the knowledge gained from that process to help me clean the dataset before proceeding to modeling. I began by filtering out every AQI value above 500, as that is an impossible value to have an may skew the prediction. Then, I mutated the air quality index to apply a square root transformation for a better distribution of values. I also renamed confusing variable names and mutated air quality index category to become a factor rather than a numeric variable. Next, I removed the predictor for the concentration of xylene, as it had too much missingness to be imputed and would negatively impact my prediction model. Finally, I removed all missing observations for air quality index so we would have no missingness for the target variable. After the cleaning process, the new dataset has 24,305 observations for 16 variables. A visualization of missingness in the new dataset can be found at @fig-missingnessclean, but the issue of missing observations was improved significantly from the raw dataset. The variables in the new dataset include one character variable, one date/time variable, 13 numeric variables, and one ordered factor. More information about these specific variables can be found in the clean codebook in the data subfolder. 
+
+### Exploratory Data Analysis for Feature Engineering
+For the modeling process, it can be beneficial to introduce feature engineering for the recipes in order to explicitly state relationships that otherwise may go unnoticed by the model. This can improve accuracy by exploring the interactions between different predictors. This exploratory data analysis is very preliminary, and a more thorough EDA can be found in the appendix. 
+
+To begin, I looked at the correlation matrix between numeric predictors to see if there were high correlations between the variables that could be used to form an interaction. There were five main interactions I wanted to explore that I will detail below.
+
+- small and large particulate matter
+- the concentration of nitrogen monoxide, the concentration of nitrogen dioxide, and the concentration of nitrous oxides
+- the concentration of sulfur dioxide and the concentration of carbon monoxide 
+- the concentration of benzene and the concentration of toluene
+- the concentration of ground ozone and the concentration of nitrogen dioxide
+
+I wanted to explore the correlation between **large and small particulate matter** because of their impact on human health. Large particulate matter is classified as smaller than 10 micrometers and small particulate matter is classified as less than 2.5 micrometers. Specifically, small particulate matter has been shown to cause premature mortality, chronic bronchitis, asthma attacks, and more. In fact, particulate matter is the greatest cause of adverse health effects related to air pollution^[California Air Resources Board. (2025). *Inhalable Particulate Matter and Health (PM2.5 and PM10)*. California Air Resources Board. [https://ww2.arb.ca.gov/resources/inhalable-particulate-matter-and-health](https://ww2.arb.ca.gov/resources/inhalable-particulate-matter-and-health)]. Their correlation is 0.90, so I believe it would be an important interaction to highlight in my feature engineered recipe (@fig-pm10-correlation)
+
+The correlation between **nitrogen monoxide, nitrogen dioxide, and nitrous oxides** intrigued me, as I was curious to see how their relationship could impact a prediction model. Many nitrogen oxides originate from the same sources, and I wanted to see the correlation between these three variables, as I am certain they have a relationship that would impact the predictive model. The correlation between nitrogen monoxide and nitrogen dioxide is 0.52, which surprisingly is not a high positive correlation. However, the correlation between nitrogen monoxide and nitrous oxides is 0.88, which is very high, and indicative of a strong relationship. Furthermore, nitrogen dioxide has a correlation value of 0.70 with nitrous oxides, so there is also a relatively high correlation there. I hope that by building this into my recipe I can further explore this pattern and improve the accuracy of my model (@fig-no-correlation)
+
+**Carbon monoxide and sulfur dioxide** are both very large contributors to air pollution and play a large role in the determination of air quality index values. Additionally, these air pollutants are a leading cause of adverse health effects in humans, so their relationshup could be important for my model to consider. Although their correlation is low with a value of 0.23, I want to explore their interaction further in my feature engineering recipes to ensure my models have the most information they can for prediction (@fig-so2-correlation)
+
+My previous interaction have been driven by scientific curiosity, but the relationship between the **concentration of benzene and the concentration of toluene** was found through the exploratory data analysis. I was puzzled as to why the concentration of benzene has almost a zero correlation with every other predictor in the dataset, but when I explored the correlation coefficients in relation to benzene (@fig-benzene-correlation) it revealed the reasoning behind this. Benzene has no relationship to any other variable in the dataset besides toluene, which has a correlation value of almost 0.8 compared to the next highest correlation value of less than 0.1. Although I am not sure of the reasoning behind this finding, I am certain this relationship is of importance for my modified recipes. 
+
+I believe the **concentration of ground ozone and the concentration of nitrogen dioxide** is important because they both contribute to different smogs throughout the world. Ground ozone, along with sulphur dioxide, is a main component in "grey smog," which can also be associated with industrial emissions (as seen in London, England). However, nitrogen dioxide is the largest contributor of "brown smog," which is attributed to vehicle exhaust and sunlight interaction (as seen in Los Angeles California)^[Breeze Technologies. (2022 January 21). *What the color of your smog tells you about local air pollutants*. Breeze Technologies UG. [https://www.breeze-technologies.de/de/blog/what-the-color-of-your-smog-tells-you-about-local-air-pollutants/](https://www.breeze-technologies.de/de/blog/what-the-color-of-your-smog-tells-you-about-local-air-pollutants/)]. I want to determine how these predictors interact to help my model predict air quality index by factoring in components of man-made smog. The correlation value for these two variables is 0.25, which does not seem overwhelmingly high, but as seen in @fig-o3-correlation, nitrogen dioxide is the highest predictor of ground ozone and should be explored through feature engineering.
+
+## Methods
+This section outlines my approach to data splitting, v-fold cross-validation for resampling, recipe creation with feature engineering, model development, and hyperparameter tuning. It also details the process of model fitting for my predictive **regression** task aimed at estimating air quality index values.
+
+### Data Splitting
+Using the cleaned dataset, I created a new split dataset with a proportion of 0.8. I also decided to stratify the data split by my target variable, the square-root transformation of air quality index - this ensures that all values are distributed equally in the training and testing dataset for better prediction accuracy. Then, I created two new datasets for training and testing. My training dataset has 19,441 observations, which is around 80% of the split dataset. My testing dataset has 4,864 observations, which is around 20% of the split dataset. 
+
+### Resampling Technique
+After ensuring there was a proper split into my training and testing datasets, I used v-fold cross validation as a resampling technique on the training dataset. V-fold cross-validation is a way to test how well a model will work on new data. Instead of using just one training set and one test set, it splits the data into v (e.g., 5 or 10) smaller groups, or "folds." The model is trained multiple times, each time using a different group for testing while the rest are used for training. In the end, the results are averaged to give a more reliable measure of the model’s performance. This helps make sure the model isn’t just memorizing the data but can actually make good predictions on new information.
+
+For my data, I used 10 folds with 5 repeats, meaning each model is trained 50 times. I chose 10 folds with 5 repeats because it is a common number in machine learning and I know it to produce reliable results in terms of improving model training/prediction accuracy. 10 folds also allows me to use a sufficient amount of observations as 90% of the training data goes into training the model (around 17,496 observations) and 10% of the training data goes into model assessment (around 1,944 observations). I also chose 5 repeats because this allows us to train each model 50 times, which will give us a good idea of the accuracy of my predictive models.
+
+### Recipes
+#### Null Recipe
+My null recipe is created specifically for the null model, which is a very simple baseline model used for comparison in predictive modeling. This recipe only contained the necessary steps for the null model to run, which included using all the appropriate predictor variables. I removed the variable for the date the data was collected because it does not play a large role in the prediction of air quality index. I also removed the variable for air quality index because it is used directly to create the target variable, the square-root transformed air quality index value. I also converted categorical (nominal) variables into dummy variables for better use in machine learning models - this includes the variables for the city the data was collected in and the variable for the category of the air quality index value. Finally, I centered and scaled numeric predictors, transforming them to have zero mean and unit variance - this is most useful for models that are sensitive to different variable scales. This is the simplest recipe I created, as it has the least amount of steps and is for a very simple model.
+
+#### Baseline Recipe
+The baseline recipe is also a relatively simple recipe as it is meant to fit a simple linear regression model. Similarly to the null model, I removed the predictors for date and air quality index to ensure there were no issues with data leakage or over performance. Then I imputed the missing values for numeric and categorical predictors. This was done by using the median value of present observations for numeric predictors and the mode value of present observations for categorical predictors. Next, I converted nominal variables into dummy variables and removed variables with zero variance. A zero-variance predictor is a variable where all the values are the same, which provides no useful information for predictive modeling and should be removed from the modeling process. Finally, I centered/scaled all numeric predictors. This is a relatively simple recipe, but it offers more information than the null recipe. 
+
+#### Simple Linear Regression Recipe (Kitchen Sink)
+This recipe is very similar to the baseline recipe with the same steps and functions used within the code. This recipe is meant to be used for my simple ridge regression model and my simple elastic model. 
+
+#### Linear Regression Recipe with Feature Engineering
+Feature engineering is the process of creating features that can be used by machine learning models to improve their accuracy, specifically for me, by creating meaningful interactions between predictors. I detailed the interactions and reasons why I chose certain predictors in the Data Overview section. This recipe contains the same steps as the kitchen sink recipe, but after converting nominal variables into dummy variables, I included specific interactions for the model to look for. This includes (in order): large and small particulate matter; nitrogen monoxide, nitrogen dioxide, and nitrogen oxide; sulfur dioxide and carbon monoxide; benzene and toluene; ground level ozone and nitrogen dioxide. This recipe is meant to be used for my ridge regression and elastic models with the goal of improving the accuracy from the simple linear regression recipe.
+
+#### Simple Tree Recipe
+This recipe has the same steps as the simple linear regression recipe, but it includes one-hot encoding for the categorical variables in the dataset. This involves converting nominal predictors into dummy variables, but they are binary, so that they can be understood easier with tree-based models. I also did not scale and center numeric variables for this recipe, as tree-based models do not require normalization because they split data based on thresholds. This recipe is meant to be used for my simple boosted tree model, simple nearest neighbor model, and simple random forest model.
+
+#### Tree Recipe with Feature Engineering
+This recipe has the same steps and feature engineering components as the advanced linear regression recipe with the exception of one-hot encoding of the nominal predictors in the dataset. I also did not center and scale numeric predictors in this recipe because it is meant for tree-based models. This recipe is meant to be used for my advanced boosted tree model, advanced nearest neighbor model, and advanced random forest model.
+
+### Models
+This section details the reasoning behind each model, the recipe each model was fit on, the hyperparameters tuned, and the number of models/trainings run for each model. 
+
+#### Null Model
+The null model will serve as a very basic baseline to compare other models to - this will show us how well the model performs with the bare minimum pre-processing and hopefully allow us to determine if building more complex models is worthwhile. I fit this model with the null recipe and there were no hyperparameters to tune, so it was a very basic model with short computational time. The null model was trained 50 times on the null recipe.
+
+#### Baseline Linear Regression Model
+This model serves as a basic linear regression model, which is more complex than the null model, but less complex than the other models I will be building. The goal of this model is to act as a comparison to see how effective the baseline model is - if the baseline RSQ value is very close to 1, there is no need to spend computational time and energy with more complex models. I fit this model with the baseline recipe and there were no hyperparameters to tune. The baseline model was trained 50 times on the baseline recipe. 
+
+#### Ridge Regression Model
+The ridge regression model is a regularized linear regression that is especially useful when dealing with multicollinearity and preventing overfitting with the data. I fit two versions of this model with both the simple linear regression recipe and the linear regression recipe with feature engineering. The ridge regression model has one hyperparameter to tune, but I left it at its default for the model:
+
+- **penalty** (amount of regularization) using the default range [-10,0] on the transformed scale (log-10 is the transformer)
+
+For both ridge models, I used a tuning grid with 5 levels for each hyperparameter, so a total of 5 models are trained 250 times. 
+
+
+#### Elastic Net Model
+The elastic net regression model combines lasso and ridge regression, which makes it a great model for handling multicollinearity and balances regularization with flexibility. I fit two versions of this model with both the simple linear regression recipe and the linear regression recipe with feature engineering. The elastic net model has two hyperparameters to tune, but I left them at their default:
+
+- **penalty** (amount of regularization) using the default range [-10,0] on the transformed scale (log-10 is the transformer)
+- **mixture** (proportion of the lasso penalty) using the default range [0,1]
+
+For both elastic net models, I used a tuning grid with 5 levels for each hyperparameter, so a total of 25 models are trained 1250 times on each recipe.
+
+#### Nearest Neighbor Model
+Nearest neighbor models are simple and intuitive, as it works by classifying or predicting based on nearest neighbors in the feature space. Unlike linear regression models, this model does not make any assumptions about the data distribution. I fit two versions of this model with both the simple tree recipe and the tree recipe with feature engineering. The nearest neighbor model has one hyperparameter to tune:
+
+- **neighbors** (number of neighbors) using the tuned range of [1,30]
+
+I chose 30 as the highest neighbors value because I felt it was large enough to exceed general trends, but not so large that it would miss specific details. For both nearest neighbor models, I used a tuning grid with 5 levels for each hyperparameter, so a total of 5 models are trained 250 times on each recipe. 
+
+#### Random Forest Model
+Random forest models combine multiple decision trees to produce more accurate and stable predictions. This model has high accuracy, and the decision tree averaging helps reduce variance and overfitting, making it a great choice for predicting air quality index values. I fit two versions of this model with both the simple tree recipe and the tree recipe with feature engineering. The random forest model has three hyperparameters to tune:
+
+- **mtry** (number of randomly selected predictors) using the tuned range [1,10]
+- **trees** (number of decision trees) using the tuned range [250,500]
+- **min_n** (minimum number of data points in a node for splitting ) using the tuned range [2,30]
+
+I chose a range of 1-10 for the number of randomly selected predictors because I do not have a high number of predictors, and this was a wide enough range to allow for anywhere from one to all of my predictors to be chosen to make it fair. I chose a range of 250-500 trees because I felt it would adequately balance higher accuracy without diminishing returns. I chose a range of 2-30 for a minimum number of data points in a node because it should capture a better generalization of the data without resulting in overfitting. For both random forest models, I used a tuning grid with 5 levels for each hyperparameter, so a total of 125 models are trained 6250 times on each recipe. 
+
+#### Boosted Tree Model 
+The boosted tree model builds strong predictive models by combining multiple weak models (usually decision trees). Each new tree in the ensemble corrects the mistakes made by the previous ones, making it very effective for complex prediction tasks. It also often has very high accuracy, making it a great choice for my specific prediction problem. I fit two versions of this model with both the simple tree recipe and the tree recipe with feature engineering. The random forest model has four hyperparameters to tune:
+
+- **mtry** (number of randomly selected predictors) using the tuned range [1,10]
+- **trees** (number of decision trees) using the tuned range [250,500]
+- **min_n** (minimum number of data points in a node for splitting ) using the tuned range [2,30]
+- **learn_rate** (learning rate) using the tuned range over [-5, -0.2] on the log-10 scale, which is the default 
+
+I chose a range of 1-10 for the number of randomly selected predictors because I do not have a high number of predictors, and this was a wide enough range to allow for anywhere from one to all of my predictors to be chosen to make it fair. I chose a range of 250-500 trees because I felt it would adequately balance higher accuracy without diminishing returns. I chose a range of 2-30 for a minimum number of data points in a node because it should capture a better generalization of the data without resulting in overfitting. Finally, I chose a learn rate of -5 to -0.2 on the log-10 scale because it is large enough that each tree should learn relatively quickly, but not so small that it will cause computational issues. For both boosted tree models, I used a tuning grid with 5 levels for each hyperparameter, so a total of 625 models are trained 31250 times on each recipe. 
+
+#### Chart of Number of Models and Trainings
+@tbl-total-trainings-model below is a total of the number models and trainings done, totalled across all recipes.
+```{r tbl-total-trainings-model}
+#| label: tbl-total-trainings-model
+#| echo: false
+#| tbl-cap: "Total Number of Models and Trainings for Each Model Type"
+# creating a data frame for the table
+model_data <- data.frame(
+  Model_Type = c("Null", "Baseline", "Ridge", "Elastic net", "K-nearest neighbors", 
+                 "Random forest", "Boosted tree", "Total"),
+  Number_of_Models = c("1", "1", "10", "50", "10", "250", "1,250", "1,572"),
+  Total_Number_of_Trainings = c("50", "50", "500", "2,500", "500", "12,500", "62,500", "78,600")
+)
+
+# Viewing the table
+model_data |>
+  knitr::kable(col.names = c("Model Type", "Number of Models", "Number of Trainings"))
+
+```
+### Assessment Metric
+My prediction problem is a regression problem, so I looked at the assessment metric of r-squared (RSQ) values to compare my models. R-squared is a statistical measure that represents the proportion of variance in the target variable that is explained by the predictors in a regression model. This value ranges from 0-1, with 1 being a model that perfectly predicts the target variable, and 0 being a model that explains none of the variance in the target variable. To directly compare my model types, I looked at the highest mean value for RSQ to choose the final model. 
+
+Although my main assessment metric is RSQ, I also want to compare the mean root mean squared error (RMSE) values for the baseline linear regression model and the null model. This will allow me to directly compare the null model to another simple baseline model to see how much better or worse the null model performs. For the final model, I will also measure RMSE, along with other regression statistics such as mean absolute error (MAE) and mean squared error (MSE).
+
+## Model Building and Selection
+As mentioned previously, the metric I used to determine the best model was RSQ. Therefore, this is the metric used and provided in my table of my best models for each model type.
+
+### Analysis of Tuning Parameters
+Here I will be briefly discussing the ideal hyperparameters for each model and an interpretation of the tuning parameters for my models. The plots referenced can be found in the appendix for tuning parameter analysis below. 
+
+#### Ridge Regression Tuning Analysis
+@fig-ridge-autoplot and @fig-ridge-autoplot-fe illustrate the performance of the ridge regression models with different measurments of the tuned hyperparameter: **penalty** (amount of regularization). From these figures, we can see similar changes/trends in the performance of RSQ using both recipes. For both ridge regression models, one on the simple linear regression recipe and one using the feature engineering recipe, we see that RSQ is highest when the penalty is the lowest. RSQ stays pretty consistent as the penalty increases, until the penalty is greater than around 0.001. From there, the RSQ value (and therefore model performance) decreases sharply, indicating a reduction in prediction accuracy. With these trends in mind, for both ridge tunes (one for each recipe), I found the best hyperparameter combination for each model, as provided below:
+
+```{r}
+#| label: tbl-ridge-hyperparameters
+#| tbl-cap: "Best Hyperparameter Values for Ridge Regression Models"
+#| echo: false
+
+# ridge model
+ridge_best <- select_best(ridge_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Linear Regression")
+# penalty = 1e-10
+
+# ridge model with feature engineering
+ridge_fe_best <- select_best(ridge_tuned_2, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# penalty = 1e-10
+
+bind_rows(ridge_best, ridge_fe_best) |>
+  knitr::kable(col.names = c("Penalty", "Recipe"))
+```
+
+@tbl-ridge-hyperparameters shows my best ridge regression model, using my simple linear regression recipe, had the hyperparameter of 1e-10 for penalty and my best ridge regression model, using my feature engineering recipe, had the hyperparameter of 1e-10 for penalty as well. This is to be expected, as both models appear to perform best at lower penalty levels.
+
+#### Elastic Net Tuning Analysis
+@fig-elastic-autoplot and @fig-elastic-autoplot-fe illustrate the performance of the elastic net models with different combinations of the tuning hyperparameters: **penalty** (amount of regularization) and **mixture** (proportion of the lasso penalty). From these figures, we can see similar changes/trends in the performance of RSQ using both recipes. For both elastic net tunes, one on the simple linear regression recipe and one using the feature engineering recipe, we see that RSQ is highest when the penalty is the lowest, across all levels of mixture. RSQ stays pretty consistent for both tunes and all mixture levels as the penalty increases, until the penalty is greater than around 0.001. From there, the RSQ value (and therefore model performance) decreases for every level of mixture, but the sharpest decrease in performance occurs in the models with the highest proportion of lasso penalty. With these trends in mind, for both elastic net tunes (one for each recipe), I found the best hyperparameter combination for each model, as provided in @tbl-elastic-hyperparameters below:
+
+```{r tbl-elastic-hyperparameters}
+#| label: tbl-elastic-hyperparameters
+#| tbl-cap: "Best Hyperparameter Values for Elastic Net Models"
+#| echo: false
+
+# elastic model
+elastic_best <- select_best(elastic_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Linear Regression")
+# penalty: 1e10, mixture: 0.288
+
+# elastic model with feature engineered recipe
+elastic_fe_best <- select_best(elastic_tuned_2, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# penalty: 1e10, mixture: 0.288
+
+# create a table for the elastic net model hyperparameters
+bind_rows(elastic_best, elastic_fe_best) |>
+  knitr::kable(col.names = c("Penalty", "Mixture", "Recipe"))
+```
+As seen above, my best elastic net model using my simple linear regression recipe had the hyperparameters of 1e-10 for penalty and 0.288 for mixture and my best elastic net model using my feature engineering recipe had the hyperparameters of 1e-10 for penalty and 0.525 for mixture.
+
+This is interesting that the mixture levels were very different for the best model depending on the recipe, however, since at the lower penalty levels (optimal in both tuning processes), all mixture levels have a similar RSQ performance, so there is most likely only a small difference in RSQ for different mixture levels at this penalty level.
+
+#### Nearest Neighbor Tuning Analysis
+@fig-kknn-autoplot and @fig-kknn-autoplot-fe illustrate the performance of the K-Nearest Neighbors Models for different levels of the hyperparameter **neighbors**. From these figures, we can see similar changes/trends in the performance of RSQ using both recipes. For both nearest neighbor tunes, one on the simple tree recipe and one of the feature engineering recipe, we see that RSQ is increasing as the number of nearest neighbors increases. However, at around 15 neighbors, the RSQ value begins to decrease and the prediction accuracy of the model goes down - this is likely due to diminishing returns with the number of neighbors. This leads me to believe that the tuning range is adequate because we capture the ideal number of neighbors in my range. With this trend in mind, for both nearest neighbor tunes (one for each recipe),  I found the best hyperparameter combination for each model, as provided in the table below.
+
+```{r tbl-kknn-hyperparameters}
+#| label: tbl-kknn-hyperparameters
+#| tbl-cap: "Best Hyperparameter Values for Nearest Neighbor Models"
+#| echo: false
+
+#nearest neighbor
+kknn_best <- select_best(kknn_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Tree")
+# neighbors = 15
+
+# nearest neighbor with feature engineering
+kknn_fe_best <- select_best(kknn_tuned, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# neighbors = 15
+
+bind_rows(kknn_best, kknn_fe_best) |>
+  knitr::kable(col.names = c("Neighbors", "Recipe"))
+```
+
+@tbl-kknn-hyperparameters reveals that both my nearest neighbor models performed best with 15 neighbors. This value falls in the middle of the range I set for the neighbor hyperparameter, which leads me to believe that this tuning range adequately captures the best hyperparameter for this specific model, and does not require additional modification. 
+
+#### Random Forest Tuning Analysis
+@fig-rf-autoplot and @fig-rf-autoplot-fe illustrate the performance of the random forest models with different combinations of the tuning hyperparameters: **min_n** (minimal node size), **mtry** (the number of randomly selected predictors), and **trees** (the number of decision trees). From these figures, we can see similar changes/trends in the RSQ value using both recipes. For both random forest tunes, one on the simple tree recipe and using the feature engineering recipe, RSQ increases with a decrease in min_n, as there is slightly better performance at the smallest minimal node size (2) across all level of trees, and mtry levels. Additionally, across all levels of trees for both tunes, the RSQ performance sharply increases until a minimal node size of 3, and then continues to increase steadily until hitting the range limit of a minimal node size of 10. Finally, all levels of trees for both tunes, show very consistent RSQ performance trends. With these trends in mind, for both random forest tunes (one for each recipe), I found the best hyperparameter combinations for each model, as provided below.
+
+```{r tbl-rf-hyperparameters}
+#| label: tbl-rf-hyperparameters
+#| echo: false
+#| tbl-cap: "Best Hyperparameter Values for Random Forest Models"
+
+# random forest
+rf_best <- select_best(rf_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Tree")
+# mtry = 10, trees = 500, min_n = 2
+
+# random forest with feature engineering
+rf_fe_best <- select_best(rf_tuned_2, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# mtry = 10, trees = 437, min_n = 2
+
+# create a table for the random forest model hyperparameters
+bind_rows(rf_best, rf_fe_best) |>
+  knitr::kable(col.names = c("Randomly Selected Predictors", "Trees", "Minimum Node Size",
+                             "Recipe"))
+```
+As seen above in @tbl-rf-hyperparameters, my random forest model using the simple tree recipe performed best with the hyperparameter combinations of 10 randomly selected predictors (mtry), 500 trees, and a minimal node size of 2 (min_n). My random forest model using feature engineering has very similar ideal hyperparameters with a combination of 10 randomly selected predictors, 437 trees, and a minimal node size of 2. Additionally, it looks like the RSQ value is continuing to improve slightly between trees of 437 and 500 for the simple tree recipe model. Therefore, maybe a future tune could look into tuning with a range of slightly more trees, however the trade off of computational time should be considered.
+
+#### Boosted Tree Tuning Analysis
+@fig-bt-autoplot and @fig-bt-autoplot-fe illustrate the performance of the boosted tree models with different combinations of the tuning hyperparameters: **min_n** (minimal node size), **mtry** (number of randomly selected predictors), **trees** (the number of decision trees), and **learn rate** (the rate at which the models learn from each other). From these figures, we can see similar changes/trends in the performance of RSQ using both recipes. For both boosted tree tunes, one on the simple tree recipe and one using the feature engineering recipe, we see that as learn rate increases, RSQ increases as well. However, this is only true until the peak value of 0.0398 - past this value there is no benefit to increasing the learning rate, and it may even harm predictive accuracy. For the lower learn rate values, RSQ increases sharply before leveling off at a number of 8 randomly selected predictors, but for the higher learn rates, the RSQ value is close to constant regardless of the number of predictors. That being said, it is still important to note that regardless of other hyperparameters, as the number of randomly selected predictors increases, RSQ increases. The lower minimal node sizes appear to do slightly better than the higher node sizes, but this improvement is slight. Similarly, the trees value seems to have a slight advantage at 500 trees, but this is only at lower predictor values - once the number of predictors exceeds 8, all the trees seem to produce the same RSQ value. With these trend in mind, for both boosted tree tunes (one for each recipe), I found the best hyperparameter combinations for each model, as provided below.
+
+```{r tbl-bt-hyperparameters}
+#| label: tbl-bt-hyperparameters
+#| echo: false
+#| tbl-cap: "Best Hyperparameter Values for Boosted Tree Models"
+
+# boosted tree
+bt_best <- select_best(bt_tuned, metric = "rsq") |>
+  mutate(.config = "Simple Tree")
+# mtry = 10, trees = 500, min_n = 11, learn rate = 0.0398
+
+# boosted tree with feature engineering
+bt_fe_best <- select_best(bt_tuned_2, metric = "rsq") |>
+  mutate(.config = "Feature Engineering")
+# mtry = 10, trees = 437, min_n = 11, learn rate = 0.398
+
+# create a table for the boosted tree model hyperparameters
+bind_rows(bt_best, bt_fe_best) |>
+  knitr::kable(col.names = c("Randomly Selected Predictors", "Trees", "Minimum Node Size",
+                             "Learn Rate", "Recipe"))
+
+```
+As seen in @tbl-bt-hyperparameters above, both my boosted tree models performed best with the hyperparameter combinations of 2 random selected predictors (mtry), 500 trees, and minimal node size of 2 (min_n), and a learn rate of 0.0398107. Additionally, it looks like the RSQ value looks like it is continuing to improve slightly as trees increase. Therefore, maybe a future tune could look into tuning with a range of slightly more trees, as boosted tree models have a sweet spot of number of trees. However, like my random forest model, the trade off of computational time should be considered.
+
+### Best Performing Models
+```{r tbl-null-comparison}
+#| label: tbl-null-comparison
+#| echo: false
+#| tbl-cap: "Average RMSE Value and Standard Error for Null and Simple Linear Regression Models"
+
+# obtain null model performance metrics
+null_metrics <- fit_null |>
+  collect_metrics() |>
+  mutate(model = "Null Model") |>
+  filter(.metric == "rmse")
+
+# obtain baseline linear regression performance metrics
+baseline_metrics <- fit_baseline |>
+  collect_metrics() |>
+  mutate(model = "Simple Linear Regression Model") |>
+  filter(.metric == "rmse")
+
+# create null model table
+tbl_null <- null_metrics |>
+  select(mean, n, std_err) |>
+  mutate(model = "Null",
+         recipe = "Null") 
+
+# create baseline simple linear regression model table
+tbl_baseline <- baseline_metrics |>
+  select(mean, n, std_err) |>
+  mutate(model = "Simple Linear Regression",
+         recipe = "Linear/Kitchen Sink")
+
+null_results_table <- bind_rows(tbl_baseline, tbl_null) |>
+  arrange(desc(mean))
+
+null_results_table |>
+  knitr::kable(col.names = c("Mean", "n", "Standard Error", "Model", "Recipe"))
+```
+@tbl-null-comparison uses the root mean squared error (RMSE) to determine how much better the linear regression model performs in comparison to the null model. I used a different assessment metric for the null model because for regression prediction problems, null models cannot compute an RSQ value. RMSE measures the average magnitude of the prediction errors, giving more weight to larger errors due to squaring. A lower RMSE value indicates better model performance, meaning predictions are closer to actual values found in the dataset. It is also important to note that the mean RMSE values are in the same units as the dependent variable, so the RMSE above are measured in square-root transformed AQI index values. 
+
+As seen above, the null model has a significantly higher RMSE than the simple linear regression model. The null model has an average deviation of 3.812 from the actual air quality index value, while the baseline model only has a difference of 0.827. This may not seem overwhelmingly significant, but when you take into account the maximum value for square-root transformed air quality index (22.338), the null model is off by an average of 17.1%, but the baseline is only off by an average of 3.7%. This goes to show that the null model significantly underperforms and for the context of this problem, more complex models are necessary.
+
+
+
+```{r tbl-model-resuls-table}
+#| label: tbl-model-results-table
+#| echo: false
+#| tbl-cap: "Average RSQ Value and Standard Error for Each Model"
+
+model_results_table |>
+  arrange(desc(mean)) |>
+  knitr::kable(col.names = c("Mean", "n", "Standard Error", "Model", "Recipe"))
+
+```
+As seen in @tbl-model-results-table, the best performing model was my random forest model using the simple tree recipe, as it not only had the highest mean RSQ value of 0.973, but also had the lowest standard error value of 0.000189. This random forest model had 10 randomly selected predictors, 500 trees, and a minimal node size of 2.
+
+The next best model was my random forest on my feature engineering recipe with a mean RSQ value of 0.9715842, with a standard error of 0.0002045. Although this RSQ is very close to the value for the other random forest model, it is not within one standard error, so I am confident in saying that the random forest model with the simple tree recipe is the best model. This random forest had the same best combination of hyperparameters as my winning model did above. My boosted tree models followed closely after with mean RSQ values of 0.971 and 0.970 for the simple tree recipe and feature engineering recipe respectively. 
+
+Overall, I am not surprised my random forest model performed the best, but I am surprised that the simple tree recipe performed better than the feature engineering recipe. From our work this quarter, as well as knowledge of random forest models, it seems that the tree based models of random forest or boosted tree have always been our winning models when used. However, I thought that by adding specific interactions into the feature engineering recipe, it would help the model recognize patterns in the data and improve predictive accuracy. This was not the case, however, and leads me to wonder how meaningful the interactions between predictors actually were. 
+
+I also am not shocked by the hyperparameter combination for my winning model, as it seems like random forest only gets better with the more trees and tends to have better results with smaller minimum node size and lower number of randomly selected predictors. This is likely beacause a smaller minimum node size allows trees to grow deeper, capturing more complex patterns in the data. Additionally, a higher number of randomly selected predictors means more predictors are considered at each split, allowing the trees to make more informed decisions. Similarly, increasing the number of trees generally improves stability and reduces variance, but the gains diminish after a certain point, which is why around 500 trees seems to be best for my model. 
+
+One interesting observation to note is that my baseline linear regression model performs pretty well in comparison to my other models. It has a higher RSQ value than the ridge models and the elastic net model with the simple linear regression recipe. This could be because the true relationship between predictors and the outcome is well captured by an ordinary least squares (OLS) regression, so adding penalty hyperparameters may introduce unnecessary bias. This leads me to believe that while certain models have a higher RSQ value, the increase is small enough that it may not outweigh the short computational time of a simple model. 
+
+Due to the high RSQ value of all my models, I believe this was a relatively easy prediction problem for my model to answer, as it has been given most of the tools it needs to form an accurate prediction. I knew going into this process that it would likely form a good result because air quality index is calculated based on the concentrations of different pollutants. However, my data set includes predictors/pollutants that are often not considered when determining the air pollution levels, so I wanted to see if adding them in to the model would make predictions more or less accurate. Additionally, usually only particulate matter is truly used to calculate AQI because it has the largest impact on human health, but I wanted to factor in other pollutants equally. The RSQ values between 0.93 and 0.97 lead me to believe that the addition of the new predictors lower the prediction accuracy, because if I only used the predictors that were used to calculate AQI directly, I would expect an RSQ of 1. However, more exploration would be needed to determine if this is truly the case.
+
+## Final Model Analysis
+As mentioned in the section above, my winning model was my random forest model using the simple tree recipe. This model had the hyperparameter combination of 10 randomly selected predictors, 500 trees, and a minimal node size of 2.
+
+I then trained this model on my entire training dataset, and then fit it to my testing data. The results of this new final model fit are shown below. 
+
+```{r}
+#| label: tbl-final-prediction-results
+#| echo: false
+#| tbl-cap: "Actual and Predicted Results for Both Transformed and Untransformed Air Quality Index Values"
+air_predict <- predict(final_fit, new_data = air_testing) |>
+  bind_cols(air_testing |> select(sqrt_aqi))
+
+air_predict |>
+  mutate(
+    aqi_pred = .pred^2,   
+    aqi_actual = sqrt_aqi^2  
+  ) |>
+  slice_head(n = 10) |>
+  knitr::kable(col.names = c("Square-Root AQI Predicted", "Square-Root AQI Actual",
+                             "Untransformed AQI Predicted", "Untransformed AQI Actual"))
+```
+@tbl-final-prediction-results shows ten random observations of the actual and predicted values for air quality index values using the square-root transformation and the untransformed data. These results indicate that my model closely matches the air quality index value in most cases, particularly in mid-range values (200-300). However, there are certain cases when the model is underpredicting (i.e. predicting lower values than are actually present). This could suggest that while the model captures general trends well, it might struggles to capture extreme values accurately. The model's tendency to underpredict when the actual AQI value is high could be due to the slight right skew still present in the square-root transformed distribution. This may lead the model to have a systematic bias towards lower values, which is seen in the table above. If this pattern persists across the entire dataset, my model may be reliable for moderate AQI levels but not for days with extremely high pollution. This is important to note because if my model is being used to make policy decisions or forecast AQI, underpredicting pollution levels could result in an inadequate response. However, I believe this model performs relatively well overall and could be used to predict most AQI values with confidence. Additionally, the nature of the air quality index scale leaves some room for error, as any value in the range of 200-300 is considered "Very Unhealthy" and anything above 300 is considered "Hazardous". Using this scale, my model is allowed some degree of uncertainty without impacting the actual result (if the actual value is 350, but the model predicts 325, it will still be considered hazardous). This leads me to believe that my model is reliable and could be used in real-life situations. 
+
+```{r tbl-final-model-prediction-sqrt}
+#| label: tbl-final-model-prediction-sqrt
+#| echo: false
+#| tbl-cap: "Different Assessment Metric Values of the Final Model for Predicting Square-Root Air Quality Index"
+air_predict_table |>
+  knitr::kable(col.names = c("Assessment Metric", "Estimator", "Estimate"))
+
+```
+Using @tbl-final-model-prediction-sqrt, we can see how well the model performs on predicting the square-root transformed AQI values using different performance metrics. RMSE measures the average error magnitude between predicted and actual values - a lower RMSE indicates better predictive performance. On average, my model deviates from the actual value by 0.621, which is around 2.78% of the total range for air quality index value. This is a relatively low RMSE value and compared to the baseline model in @tbl-null-comparison, performs better. The RSQ value of 0.974 is better than any of the models we see in @tbl-model-results-table. This means that the final random forest model has the highest predictive accuracy of all the models and can explain 97.4% of the variance in the data - this is very high, suggesting an excellent fit. The mean absolute error (MAE) measures the average absolute difference between predicted and actual values. Unlike RMSE, MAE does not square errors, so it is less sensitive to large outliers, which can make it a better measure of error in the model. 
+
+The MAE shows that, on average, the model has a difference of 0.471 units for square-root transformed air quality index values - this is around 2.11% of the total range for air quality index value, which is better than the RMSE estimate. When comparing MAE to RMSE, we see that RMSE is larger than MAE, which indicates some larger errors exist because RMSE penalizes larger errors more. Mean absolute percentage error (MAPE) measures the average percentage error between predicted and actual values - lower values indicate better predictive accuracy. A MAPE of 4.21% means my model's predictions are, on average, within 4.21% of the actual AQI values. This is a very low error percentage, suggesting that my model does a good job of predicting the values for air quality index. Overall, these assessment metrics demonstrate great performance from my final model and I am confident my model can predict air quality index with relative accuracy.
+
+
+
+```{r tbl-final-model-prediction-aqi}
+#| label: tbl-final-model-prediction-aqi
+#| echo: false
+#| tbl-cap: "Different Assessment Metric Values of the Final Model for Predicting Actual Air Quality Index"
+air_predict_table_aqi |>
+  knitr::kable(col.names = c("Assessment Metric", "Estimator", "Estimate"))
+
+```
+To determine how my model would perform using the untransformed air quality index value, I undid the square-root transformation initially used to improve model performance. @tbl-final-model-prediction-aqi provides a clearer picture of real-world performance by evaluating the final model on different assessment metrics. On average, the model's predictions deviate from the actual AQI by 16.16 units - AQI values range widely (e.g., 0–500+), so this is a relatively small difference. Especially considering that air quality index is often reported in a category (i.e. "Safe", "Unhealthy", "Very Unhealthy", etc.) that has a large range of acceptable values. For example, the "Hazardous" category includes any value that is over 300, so if our model only deviates by 16.16 units, this will not significantly impact the end result. Additionally, the RSQ value is the highest we have seem from any model in @tbl-model-results-table with a value of 0.975. This suggests that 97.5% of variance in the data can be explained by my model, and indicates a very strong fit to the data. 
+
+The MAE value claims that, on average, predictions are off by 11.51 AQI units. Since MAE is lower than RMSE, large errors (outliers) exist but are not overly dominant. The MAPE says that on average our predictions are within 8.48% of the true AQI values. This is larger than the MAPE of our model using the square-root transformed air quality index values, but that is to be expected as AQI values on the actual scale are much larger, so there is more room for error. This is a relatively low error rate, meaning the model is fairly accurate, but percentage-based metrics can be less informative for very low or very high AQI values. Overall, these assessment metrics demonstrate great performance from my final model on the actual AQI scale and I am confident my model can predict air quality index with relative accuracy.
+
+![Prediction accuracy for our final model on the square-root scale](figures/final_model_analysis_plot.jpg){#fig-fma}
+
+![Prediction accuracy for our final model on the untransformed scale](figures/final_model_analysis_plot_aqi.jpg){#fig-fma-aqi}
+
+
+@fig-fma and @fig-fma-aqi show the predictive accuracy of our final random forest model on both the transformed and untransformed scale. In these figures, each point represents an air quality index value. The red line is the ideal prediction value, meaning if the observation falls on the red line, the model predicted the exact value found in the dataset. If the point falls above the red line, our model overpredicted the value, and if it falls below the red line, our model underpredicted the value. My model appears to predict the values with strong accuracy as there is not significant deviance from the line. We see a visual representation of the values in @tbl-final-prediction-results, especially in the higher actual air quality index observations where there are quite a few observations under the red line (meaning our model underpredicted these higher AQI values). 
+
+It appears as though our model does an almost perfect job of predicting lower AQI values, but struggles more to predict higher AQI values - there is more deviance towards the right of the x-axis. This could be due to the significant right skew found in many of the predictors in the dataset. Many observations of pollutants are found at lower concentrations, but there are specific days that have exceedingly large concentrations that can impact the distribution of predictor variables. This can causes my model to have a bias towards underprediction, especially at higher AQI values with higher pollutant concentration. Another important thing to note is that there appears to be less deviance on the square-root scale, but this is to be expected as the values are smaller. Overall, the models do a great job of accurately predicting air quality index on both scales, but it could be beneficial to look into a way to reduce error at higher values, especially if these are the hazardous air conditions we are hoping to forecast.
+
+### Model Complexity versus Model Performance
+For any predictive model building process, it is important to create a baseline or null model to be able to have a reference of how much better a more complex model will perform compared to a simple model. When selecting the best model, it is important to not only weigh metric improvement but also the computational time associated with the complexity of the model. 
+
+As mentioned before, the random forest with a simple tree recipe performed the best across folds with a mean RSQ value of 0.972. My linear regression baseline model had a mean RSQ value of 0.953. While this is not the largest improvement, the random forest model did not cost significant computational time, so I felt that the extra 0.02 was worth the complexity. I also believe that with more trees and a larger number of randomly selected predictors, the model's prediction accuracy could be further improved. Additionally, when fit to the testing data, the RSQ value increased to 0.974, which means the random forest model is a great option for my prediction problem as it is not just overfitting to the data. However, the baseline model performed with such a high RSQ value, there could be an argument as to why that model should be chosen as the best.
+
+After considering these trade-offs, I firmly believe that my random forest model using the simple tree recipe was the best choice for this project in terms of its superior performance.
+
+## Conclusion
+Through this project, I gained valuable insight into model building, feature engineering, and balancing complexity with performance in selecting the best model.
+
+As noted earlier, my best-performing model was the random forest using the simple tree recipe, evaluated based on the high RSQ value. Other strong models included the random forest with my feature engineering recipe and both boosted tree models. This aligns with my prior experience tuning tree-based models throughout the quarter, as they oftentimes have the highest predictive accuracy and best assessment metrics.
+
+Interestingly, the random forest, boosted tree, and nearest neighbor models performed slightly better with the simple tree recipe rather than the feature engineering recipe, and their optimal hyperparameter sets remained the same across recipes. This suggests that the interactions I included in my recipe were not as impactful as I originally thought, and did not end up improving the model's ability to predict air quality index. This could have been due to a skewed distribution of some predictors, or choosing predictor relationships the model recognized independently of feature engineering, leading to the lower RSQ value.
+
+However, for parametric models—elastic net and ridge regression—the feature engineering recipe led to better performance than the simpler kitchen sink approach. This suggests that the interaction terms I introduced between correlated variables may have enhanced model accuracy for linear models by capturing relationships that regularization alone might not have fully addressed. Unlike tree-based models, which performed better with the simple tree recipe, the added structure from engineered interactions likely helped parametric models generalize better.
+
+My baseline simple linear regression model performed surprisingly well, with a mean RSQ comparable to the top models. If computational efficiency were a primary concern, I might lean toward using it. However, given that my tuned models didn’t significantly increase run-time, I felt justified in prioritizing them over the baseline.
+
+Looking ahead, I have several areas for further exploration:
+
+- **Expanding the Number of Trees** – Since my highest RSQ values for both random forest and boosted trees occurred at the upper limit of the trees parameter range, I would explore increasing this limit further to assess the balance between potential performance improvements and the additional computational cost.
+
+ - **Enhancing Hyperparameter Tuning** – I would consider increasing the number of tuning levels, as five may be too limited, or adopting a more randomized search method, such as Latin hypercube sampling, to improve hyperparameter optimization.
+
+- **Reduce Underprediction** - At higher AQI values, my model does not perform as well as I would want in terms of prediction accuracy. I would love to find a solution to this problem in the random forest model to better forecast hazardous air conditions.
+
+- **Explore more Predictors** - I want to ensure my high RSQ is valid and not just due to the presence of specific pollutants. Furthermore, there may be a pollutant that predicts AQI better than the predictors we used, so I want to try and get a more comprehensive view of air pollution in order to forecast hazardous conditions.
+
+- **Incorporating Additional Data** – My dataset is part of a larger collection with 3 related datasets. Expanding my analysis to include these could improve regression predictions.
+
+Overall, I am pleased with these initial steps in model development and evaluation. I successfully built a model that predicts air quality index in India effectively, which makes me feel accomplished in my machine learning journey. In the future, I might refine it further to enable real-time predictions as air quality increases or decreases throughout the day. For now, I look forward to continuing this work beyond the scope of this class and look forward to exploring predictive modeling more!
+
+## References
+Alzueta M. et.al. (2023 November). *CO assisted NH3 oxidation*. ScienceDirect. [https://www.sciencedirect.com/science/article/pii/S0010218022004552](https://www.sciencedirect.com/science/article/pii/S0010218022004552)
+
+Bannister, M. (2024). *Air pollution in winter: why it’s worse and what you can do about it*. AirThings. [https://www.airthings.com/resources/air-pollution-winter#:~:text=Air%20pollution%20is%20worse%20in%20the%20winter%20because%20colder%20and,ways%20to%20combat%20air%20pollution.](https://www.airthings.com/resources/air-pollution-winter#:~:text=Air%20pollution%20is%20worse%20in%20the%20winter%20because%20colder%20and,ways%20to%20combat%20air%20pollution.)
+
+Breeze Technologies. (2022 January 21). *What the color of your smog tells you about local air pollutants*. Breeze Technologies UG. [https://www.breeze-technologies.de/de/blog/what-the-color-of-your-smog-tells-you-about-local-air-pollutants/](https://www.breeze-technologies.de/de/blog/what-the-color-of-your-smog-tells-you-about-local-air-pollutants/)
+
+Brooke, Ethan. (2024 January 17). *Air Pollution in India: A Deep Dive into Causes, Effects, and Solutions*. BreatheSafeAir. [https://breathesafeair.com/air-pollution-in-india/](https://breathesafeair.com/air-pollution-in-india/)
+
+California Air Resources Board. (2025). *Inhalable Particulate Matter and Health (PM2.5 and PM10)*. California Air Resources Board. [https://ww2.arb.ca.gov/resources/inhalable-particulate-matter-and-health](https://ww2.arb.ca.gov/resources/inhalable-particulate-matter-and-health)
+
+Colorado Clean Energy Fund. (2024 August 12). *Air Quality Index Explained: How AQI Affects Our Environment*. CCEF. [https://cocleanenergyfund.com/air-quality-index-explained/?gad_source=1&gclid=Cj0KCQiA_Yq-BhC9ARIsAA6fbAj0ENYIF5gyUvt85jLikqwa0dWUoeIEuG4voEhjxbtCk_kn_7UApRwaAo-TEALw_wcB](https://cocleanenergyfund.com/air-quality-index-explained/?gad_source=1&gclid=Cj0KCQiA_Yq-BhC9ARIsAA6fbAj0ENYIF5gyUvt85jLikqwa0dWUoeIEuG4voEhjxbtCk_kn_7UApRwaAo-TEALw_wcB)
+
+Harrison R. et.al. (2010). *WHO Guidelines for Indoor Air Quality: Selected Pollutants - Benzene*. National Library of Medicine. [https://www.ncbi.nlm.nih.gov/books/NBK138708/](https://www.ncbi.nlm.nih.gov/books/NBK138708/)
+
+IQAir. (2023). *World’s most polluted countries & regions*. IQAir Historical Rankings. [https://www.iqair.com/us/world-most-polluted-countries](https://www.iqair.com/us/world-most-polluted-countries)
+
+Minnesota Pollution Control Agency. (2025). *Understanding the air quality index (AQI)*. Air Quality for Minnesota Pollution Control Agency. [https://www.pca.state.mn.us/air-water-land-climate/understanding-the-air-quality-index-aqi#:~:text=The%20AQI%20is%20calculated%20by,National%20Ambient%20Air%20Quality%20Standards](https://www.pca.state.mn.us/air-water-land-climate/understanding-the-air-quality-index-aqi#:~:text=The%20AQI%20is%20calculated%20by,National%20Ambient%20Air%20Quality%20Standards)
+
+Vopani. (2020). *Air Quality Data in India (2015 - 2020)*. Kaggle. [https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india/code?datasetId=630055](https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india/code?datasetId=630055)
+
+World Health Organization. (2025). *Air Pollution*. World Health Organization Health Topics. [https://www.who.int/health-topics/air-pollution#tab=tab_1](https://www.who.int/health-topics/air-pollution#tab=tab_1)
+
+
+
+
+## Appendix: Missingness and Target Variable Analysis
+### Missingness in the Datasets
+![Missingness for each variable in the raw dataset](figures/appendix_eda_figure1.jpg){#fig-missingnessraw}
+
+@fig-missingnessraw shows all the missingness in the raw air quality dataset. As seen above, each variable has a degree of missingness except for the city where the data was collected and the date the data was collected. Many of the variables have around 15% missingness (15% of their observations are not present in the dataset), which is not ideal, but manageable. The variables that have questionable missingness are the variables that represent the concentration of benzene, the concentration of ammonia, the concentration of toluene, and the concentration of large particulate matter. However, during the cleaning process I hope to reduce the percentage of missingness. Additionally, the missing numeric values can be imputed during the modeling process. The only variable we will need to remove is the concentration of xylene, which should not be a large issue because it is not highly correlated to air quality index, so is not the best predictor anyway.
+
+![Missingness for each variable in the clean dataset](figures/missing_clean_data.jpg){#fig-missingnessclean}
+
+As seen in @fig-missingnessclean, there are less total missing observations, and many variables have little to no missingness. Air quality index, air quality index category, city where data was collected, date the data was collected, and square-root transformed air quality index all have zero missingness, which is great for my model. The concentration values for nitrogen monoxide, nitrogen dioxide, carbon monoxide, sulfur dioxide, small particulate matter, and ground level ozone have 5% or less missingness, which can easily be imputed numerically. The concentration of nitrous oxides and benzene have slightly more missingness, but still only 15% or less, which should also not be an issue. The concentration of toluene, ammonia, and large particulate matter has more significant missingness, but all these variables have over 75% of their observations present in the data, so with only 25% missingness or less, I do not believe they need to be removed from the clean dataset.
+
+### Additional Target Variable Analysis
+
+```{r tbl-correlation-matrix}
+#| label: tbl-correlation-matrix
+#| echo: false
+#| tbl-cap: "Correlation Matrix for Predictors in the Raw Dataset"
+correlation_matrix <- cor(air_data %>% select(where(is.numeric)), use = "complete.obs")
+correlation_matrix |>
+  knitr::kable()
+```
+
+@tbl-correlation-matrix shows us how highly correlated each predictor is to every other variable in the dataset. In relation to AQI, large and small particulate matter have very high correlation (above 90%) and could negatively impact my model - I will need to keep a close eye on this to ensure it doesn't impact model accuracy. Every other predictor has less than a 60% correlation, which isn't ideal, but we do want the variables to have a degree of correlation or they are not good predictors. I am not worried about a 60% correlation resulting in an impact on the model, so I will keep all these predictors in the dataset.
+
+
+## Appendix: Exploratory Data Analysis
+### Correlation for Feature Engineering
+```{r fig-pm10-correlation}
+#| label: fig-pm10-correlation
+#| echo: false
+#| fig-cap: "Correlation of other predictors to the concentration of large particulate matter"
+create_correlation_graph(air_training, "pm10")
+```
+In @fig-pm10-correlation, we see that the variables with the highest positive correlation are: the concentration of small particulate matter, the air quality index value, and the square-root transformed air quality index value. This is to be expected, as we know large particulate matter has a high correlation on the AQI value. However, I was intrigued to see that the small particulate matter concentration had such a high correlation. This leads me to believe that particulate matter of all sizes may originate from similar sources and act in tandem to decrease air quality. The variables with the lowest positive correlation are the concentration of benzene, carbon monoxide, and toluene. I thought the concentration of benzene would play a bigger role in predicting large particulate matter, as they are often found from the same sources, but I am glad I analyzed this correlation further as it gives me more information for feature engineering^[Harrison R. et.al. (2010). *WHO Guidelines for Indoor Air Quality: Selected Pollutants - Benzene*. National Library of Medicine. [https://www.ncbi.nlm.nih.gov/books/NBK138708/](https://www.ncbi.nlm.nih.gov/books/NBK138708/)].
+
+```{r fig-no-correlation}
+#| label: fig-no-correlation
+#| echo: false
+#| fig-cap: "Correlation of other predictors to the concentration of nitrous oxides"
+create_correlation_graph(air_training, "n_ox")
+```
+@fig-no-correlation shows that nitrogen monoxide and nitrogen dioxide have the highest correlation with nitrous oxides, which is to be expected. However, I am interested to know why there is a higher correlation with nitrogen monoxide than nitrogen dioxide. My suspicion is that there is an overabundance of nitrogen monoxide, which causes it to be a better predictor because there is a higher concentration. Conversely, benzene and ground ozone are not highly correlated with nitrous oxides. This does not surprise me, but I want to examine the relationship between nitrogen dioxide and ground ozone further.
+
+```{r fig-so2-correlation}
+#| label: fig-so2-correlation
+#| echo: false
+#| fig-cap: "Correlation of other predictors to the concentration of sulfur dioxide"
+create_correlation_graph(air_training, "so2")
+```
+@fig-so2-correlation shows that the concentration of carbon monoxide is the highest predictor of sulfur dioxide, as it has the highest correlation. This is closely followed by air quality index, and nitrogen dioxide. However, it is important to note the scale of these correlations, as the axes make it seem like a large correlation, but all of these variables have a value of 0.4 or less. I am not surprised to see carbon monoxide has such a strong positive relationship with sulfur dioxide, because they often come from similar sources and are very prominant air pollutants. The most interesting part of this figure to me is the negative relationship of sulfur dioxide concentration to ammonia. I find it shocking that there is an inverse effect on ammonia concentration. Upon further research, I found that carbon monoxide is a good oxidizing agent for ammonia, and causes it to become a nitrous oxide or a dinitrogen atom - this is likely the cause of the negative relationship^[Alzueta M. et.al. (2023 November). *CO assisted NH3 oxidation*. ScienceDirect. [https://www.sciencedirect.com/science/article/pii/S0010218022004552](https://www.sciencedirect.com/science/article/pii/S0010218022004552)].
+
+```{r fig-benzene-correlation}
+#| label: fig-benzene-correlation
+#| echo: false
+#| fig-cap: "Correlation of other predictors to the concentration of benzene"
+create_correlation_graph(air_training, "benzene")
+```
+@fig-benzene-correlation has a very strange correlation graph in which only one predictor has any correlation to the concentration of benzene. The other variables have a correlation value of less than 0.1, which is essentially the same as no correlation. However, toluene has a very strong positive correlation with a value of almost 0.8. This is a relationship that would benefit from futher exploration and interaction in feature engineering recipes for predictive modeling.
+
+```{r fig-o3-correlation}
+#| label: fig-o3-correlation
+#| echo: false
+#| fig-cap: "Correlation of other predictors to the concentration of ground ozone"
+create_correlation_graph(air_training, "o3")
+```
+@fig-o3-correlation shows that nitrogen dioxide, large particulate matter, and air quality index are the largest predictors. The correlation coefficient for nitrogen dioxide is still relatively low - less than 0.3 - but this is a significant enough relationship that I want to explore more. I am interested to know why carbon monoxide does not play an important role in the prediction of ground ozone concentrations because they are both important air pollutants and are oftentimes found in the atmosphere at the same time. Additionally, nitrogen monoxide is negatively correlated with ground ozone, but this is likely due to the chemistry and the desire for the three oxygens in ozone to take from nitrogen, reducing nitrogen monoxide concentrations. 
+
+### Distribution of Predictors
+Many of the predictors in this dataset have a severe right skew, with only a few having a symmetric distribution. I thought about removing certain high outliers, but there are genuinely some days where cities in India have unbelievably high concentrations of different pollutants - it felt unjust to remove data simply because it doesn't work for me. In this way, I chose to trust the modeling process to handle outliers, and it does not appear to have impacted the predictive accuracy of the model overall. 
+
+![The number of air quality index observations in the dataset broken down by city in India](figures/city_distribution.jpg){#fig-city-distribution}
+
+There is an unequal distribution of observations depending on which city in India we are evaluating, as seen in @fig-city-distribution. Cities such as Aizawl, Ernakulam, Kochi, and Shillong have a very small number of observations, meaning air quality index values from their locations make up a very small percentage of the total dataset. This could impact the prediction for specific cities, as those with less observations have less data for the model to learn off of, leading to less prediction accuracy for specific areas of India. However, cities like Bengaluru, Chennai, Lucknow, and Hyderabad have a very high number of observations. This may skew the model to be a better predictor for these locations because it develops a bias towards data found in these locations. It would be interesting to explore the reasoning behind certain cities gaining more air quality attention than others, but it is important to keep this in mind when seeing the final model analysis results.
+
+![Distribution of small particulate matter concentration. This data contains a significant right skew](figures/pm2_5_distribution.jpg){#fig-pm25-distribution}
+
+In @fig-pm25-distribution, we see the right skew present in the variable for small particulate matter. The data exhibits a significant right skew, meaning that most observations are concentrated at lower values, with a long tail extending toward higher concentrations. This suggests that while lower PM2.5 levels are more common, there are occasional instances of extremely high concentrations, which could indicate pollution spikes or specific environmental events.
+
+![Distribution of large particulate matter concentration in the dataset. There is a significant right skew in the data](figures/pm10_distribution.jpg){#fig-pm10-distribution}
+
+@fig-pm10-distribution explores the distribution of large particulate matter concentration in the dataset. The density plot reveals a right-skewed distribution, indicating that most observations fall at lower concentrations, with a moderate number of high values extending the tail. The boxplot further confirms this skew, showing several high outliers that contribute to the distribution's asymmetry. However, compared to small particulate matter distribution, the skew is less pronounced. Most observations remain below 400 µg/m³, suggesting that extreme pollution events are less frequent but still present in the dataset.
+
+![Distribution of nitrogen monoxide concentration in the dataset. There is a very significant right skew in the data with a large number of high outliers](figures/no_distribution.jpg){#fig-no-distribution}
+
+The distribution of nitrogen monoxide concentrations in @fig-no-distribution  exhibits a severe right skew, with most values falling below 50 µg/m³ but a small number of extreme outliers reaching nearly 400 µg/m³. The density plot illustrates that the majority of observations are clustered at lower concentrations, while the long right tail suggests that certain locations or events contribute significantly higher pollution levels. The boxplot reinforces this pattern, showing a compact interquartile range with numerous high outliers. This indicates that while nitrogen monoxide levels are generally lower, there are sporadic but substantial spikes in concentration, likely due to localized sources such as traffic congestion, industrial emissions, or combustion processes. The findings suggest that NO pollution is highly variable across different locations and time periods, warranting further investigation into the specific factors driving these extreme values.
+
+![Distribution of nitrogen dioxide concentration in the dataset. There is a significant right skew present in the distribution](figures/no2_distribution.jpg){#fig-no2-distribution}
+
+The distribution of nitrogen dioxide concentrations in @fig-no2-distribution exhibits a moderate to severe right skew, though it is not as extreme as nitrogen monoxide. The density plot reveals that most observations are concentrated below 100 µg/m³, but a number of outliers exceed 350 µg/m³, indicating various high pollution events. The density plot has a sharp, peaked shape, resembling an upside-down "V", suggesting that NO₂ values are tightly clustered around a central range with a steep drop-off on both sides. The boxplot highlights the presence of multiple high outliers, further reinforcing that while NO₂ levels are generally moderate, certain locations or events contribute disproportionately to extreme pollution levels. These findings suggest that NO₂ pollution follows a skewed distribution with occasional spikes, likely due to urban traffic, industrial emissions, and atmospheric conditions that trap pollutants in specific areas.
+
+![Distribution of nitrous oxide concentration in the dataset. There is a significant right skew with a large number of high outliers at high concentrations](figures/nox_distribution.jpg){#fig-nox-distribution}
+
+The distribution of nitrous oxides concentrations in @fig-nox-distribution shows a right skew, though it is less extreme than some other pollutants in the dataset. The density plot reveals that most values are concentrated below 100 µg/m³, but there are a number of high outliers exceeding 350 µg/m³, indicating occasional extreme pollution levels. Similar to nitrogen dioxide, the density plot has a sharp, pointed peak, suggesting that the majority of observations are clustered around a central value with a rapid decline on either side. This shape may indicate a relatively stable baseline for NOₓ pollution, punctuated by periodic spikes likely caused by traffic emissions, industrial activity, or specific weather conditions that trap pollutants. The boxplot confirms the presence of high outliers, reinforcing that while NOₓ levels are typically moderate, certain extreme events contribute significantly to elevated pollution levels.
+
+![Distribution of ammonia concentration in the dataset. There is a very significant right skew with an extremely large number of outliers at large concentrations](figures/nh3_distribution.jpg){#fig-nh3-distribution}
+
+The distribution of ammonia concentrations in @fig-nh3-distribution shows a significant right skew, with most values concentrated below 50 µg/m³, but several high outliers surpassing 350 µg/m³. This indicates that while ammonia levels are generally moderate, there are instances of extreme pollution. The density plot reveals a more rounded peak compared to some of the other pollutants in the dataset, which suggests a more gradual decline in the concentration of ammonia across different levels, rather than a sharp, pointy peak like that seen in other variables. The boxplot further confirms the presence of extreme outliers, indicating that high ammonia concentrations are relatively rare but impactful. The overall shape of the ammonia distribution suggests that the majority of observations fall within a specific, lower concentration range, with occasional extreme spikes causing significant fluctuations in air quality.
+
+![Distribution of carbon monoxide concentration in the dataset. Insanely right skewed predictor - has almost no curve because the distribution is so small. Not a lot of outliers, but the outliers are at very high concentrations](figures/co_distribution.jpg){#fig-co-distribution}
+
+The distribution of carbon monoxide concentrations in @fig-co-distribution is extremely right-skewed, perhaps one of the most severe right-skewed distributions observed in the dataset. The vast majority of values are concentrated below 10 mg/m³, but there are several outliers that soar to levels over 150 mg/m³, indicating that while low concentrations are common, there are occasional, extreme spikes in pollution. The density plot highlights the sharp peak on the lower end of the distribution, with a steep drop-off as values increase. The boxplot further emphasizes the presence of significant outliers, with the distribution heavily skewed toward the lower concentration range. This suggests that carbon monoxide levels in the dataset generally remain low, but when they do spike, the levels can be extraordinarily high, contributing to potential environmental and health risks.
+
+![Distribution of sulfur dioxide concentration in the dataset. Right skew with a pointed peak, insinuating a sharp cluster of observations at a specific value](figures/so2_distribution.jpg){#fig-so2-distribution}
+
+In @fig-so2-distribution, the distribution of sulfur dioxide concentrations is right-skewed, though not as extreme as that of carbon monoxide. The concentration values tend to cluster below 25 µg/m³, with a sharp peak at this lower range, as seen in the density plot. However, there are lots of outliers above 150 µg/m³, indicating occasional high pollution levels. The boxplot confirms the presence of these high outliers, contributing to the right-skew in the distribution. While the skew is significant, it is less pronounced compared to other pollutants like CO, suggesting that sulfur dioxide concentrations generally stay lower, but can occasionally spike to high levels. This pattern suggests that sulfur dioxide may be a less frequent but impactful air pollutant.
+
+![Distribution of ground ozone concentration in the dataset. There is a moderate right skew with a rounded peak, suggesting there is a more symmetric distribution of values for this predictor](figures/o3_distribution.jpg){#fig-o3-distribution}
+
+The distribution of ground ozone concentrations in @fig-o3-distribution shows a moderate right-skew. Most of the values are clustered under 50 µg/m³, with a few higher observations reaching up to 200 µg/m³. The density plot reveals a relatively smooth peak at the lower end of the distribution, indicating that ground ozone is most commonly found at these lower concentrations. However, the boxplot highlights outliers at higher concentrations, contributing to the right-skew. While the distribution is still skewed, it is relatively less extreme and more symmetric compared to other pollutants, making ground ozone concentrations the most evenly distributed among those analyzed so far.
+
+![Distribution of benzene concentration in the dataset. This is an incredibly right skewed distribution that has outliers with extraordinarily high benzene concentrationa](figures/benzene_distribution.jpg){#fig-benzene-distribution}
+
+The distribution of benzene concentrations in @fig-benzene-distribution shows an extremely severe right-skew, making it one of the most extreme distributions in the dataset, even more skewed than carbon monoxide. Most of the values are concentrated between 1-3 µg/m³, with a few outliers exceeding 400 µg/m³. The density plot shows a sharp peak at the lower concentrations, while the boxplot highlights the presence of these extraordinarily high outliers, which significantly contribute to the right-skew. The distribution is highly unusual and displays a very unusual pattern, likely indicating some rare but intense occurrences of benzene at much higher concentrations than most of the data.
+
+![Distribution of toluene concentration in the dataset. This is also a very severe right skew that indicates outliers at significantly high concentrations.](figures/toluene_distribution.jpg){#fig-toluene-distribution}
+
+@fig-toluene-distribution shows the distribution of toluene concentrations with an extremely severe right-skew, similar to that of benzene and carbon monoxide. Most of the values fall below 10 µg/m³, but there are some outliers exceeding 400 µg/m³, which significantly contribute to the right-skew. The density plot shows a sharp peak at the lower concentrations, while the boxplot highlights a significant number of outliers at extraordinarily high concentrations. This distribution is unusual and extreme, resembling the distribution patterns of other highly skewed pollutants like benzene, with a clear tendency toward higher values being much rarer and more intense.
+
+![Number of Observations in each air quality index category](figures/aqi_category_distribution.jpg){#fig-aqi-category-distribution}
+
+As seen in @fig-aqi-category-distribution, the distribution of observations across the AQI categories reveals that the moderate and satisfactory categories have the most observations, while there are few observations in the good, very poor, and severe air quality categories. This imbalance suggests that the dataset may be skewed toward middle-range AQI values (around 100-200), which could make the model less effective at predicting extreme air quality conditions (both very low and very high AQI). The model might perform well in predicting more typical AQI values, but less reliable predictions could occur for cases at the extreme ends of the AQI spectrum due to the limited representation of these categories in the dataset.
+
+### Extra Exploratory Data Analysis
+These are some extra plots that do not necessarily pertain to the prediction aspect of this project, but are interesting to look at in terms of air pollution data
+
+![Average AQI values by each city in India](figures/aqi_cities.jpg){#fig-aqi-city}
+
+First, I wanted to see if AQI differed significantly by city in India - this would impact how well our model is able to predict certain locations. @fig-aqi-city provides a comparison of AQI distributions across different cities in India, with cities ordered by their median AQI values in descending order. It highlights the variability of AQI within each city using boxplots, with Aizawl showing the lowest AQI values (ranging from 0 to 50), indicating relatively good air quality. On the other hand, Ahmedabad exhibits the highest AQI values, with a mean around 300, implying consistent poor air quality. The graph visually reveals that some cities experience more extreme AQI fluctuations, as indicated by the outliers in the boxplots. However, it's important to note that this visualization does not account for the number of observations per city, which could lead to potential skewing, especially for cities with fewer data points.
+
+![Shows the trend of the Air Quality Index (AQI) over time, with higher AQI values in winter and lower values in summer. The years 2018 and 2019 show less fluctuation, potentially due to external factors like natural disasters.](figures/aqi_trend.jpg){#fig-aqi-trend}
+
+Next I wanted to see how air quality index changes over time within the 5 year timespan the data is collected. @fig-aqi-trend displays the trend of the Air Quality Index (AQI) over time, showing fluctuations year by year. There are noticeable year-to-year variations in AQI levels, with a general pattern emerging across the seasons. Specifically, AQI values tend to be higher during the winter months, indicating poorer air quality, while summer months show consistently lower AQI values. This is likely because the colder, drier air in winter traps pollutants in the lower atmosphere, causing a "bubble" of pollution for us to breathe^[Bannister, M. (2024). *Air pollution in winter: why it’s worse and what you can do about it*. AirThings. [https://www.airthings.com/resources/air-pollution-winter#:~:text=Air%20pollution%20is%20worse%20in%20the%20winter%20because%20colder%20and,ways%20to%20combat%20air%20pollution.](https://www.airthings.com/resources/air-pollution-winter#:~:text=Air%20pollution%20is%20worse%20in%20the%20winter%20because%20colder%20and,ways%20to%20combat%20air%20pollution.)]. Additionally, our trends in the winter can lead to more air pollution as we are more inclined to use excess heating, walk less/drive more, and produce more carbon emissions. The trend also reveals less fluctuation in AQI during the years 2018 and 2019, which could potentially be linked to natural disasters or other external factors affecting air quality during those years. Overall, the graph highlights the dynamic nature of air quality over time, with clear seasonal patterns and some anomalies in certain years.
+
+![Heatmap showing AQI levels over time across cities, with color intensity representing AQI values. Cities like Delhi, Ahmedabad, and Patna exhibit consistently poor air quality, while cities like Chennai, Aizawl, and Hyderabad maintain better air quality. The heatmap also reflects the number of observations for each city](figures/aqi_cities_heatmap.jpg){#fig-aqi-city-heatmap}
+
+The heatmap of AQI levels over time in @fig-aqi-city-heatmap provides a clear visualization of air quality trends for various cities. The graph displays a gradient of AQI values, where cities like Delhi, Ahmedabad, and Patna consistently show higher AQI values (ranging from 300-400), indicating poorer air quality. On the other hand, cities like Chennai, Aizawl, and Hyderabad exhibit lower AQI values (ranging from 100-200), suggesting better air quality. The heatmap not only shows the fluctuation in AQI over time for each city, but also allows for an understanding of the frequency of observations, highlighting cities with more consistent data. This format provides a comprehensive view of both temporal changes and data volume across cities.
+
+## Appendix: Tuning Parameter Analysis
+### Ridge Regression Model
+![The trend of ridge regression tuning parameters on the simple linear regression recipe. RSQ decreases with the increase in amount of regularization.](figures/ridge_autoplot.jpg){#fig-ridge-autoplot}
+
+The tuning results for the ridge regression model on the simple linear regression recipe in @fig-ridge-autoplot reveal that as the amount of regularization increases, the R-squared (RSQ) value decreases. This suggests that applying stronger regularization reduces the model's ability to fit the training data effectively. Ridge regression introduces a **penalty** term that shrinks the regression coefficients toward zero, which helps mitigate overfitting, particularly when multicollinearity is present. However, excessive regularization can overly constrain the model, preventing it from capturing relationships between predictors in the data. The observed decline in RSQ implies that higher penalty values force the model to underfit, reducing its predictive accuracy. For the best results, it is best to use a lower penalty value for the ridge regression model.
+
+![The trend of ridge regression tuning parameters on the feature engineering recipe. RSQ decreases with the increase in amount of regularization.](figures/ridge_autoplot_fe.jpg){#fig-ridge-autoplot-fe}
+
+The tuning results for the ridge regression model on the feature engineering recipe in @fig-ridge-autoplot-fe reveal that as the amount of regularization increases, the R-squared (RSQ) value decreases. This plot is very similar to the plot for the ridge model with the simple linear regression recipe, and has very similar trends for regularization. Again we see that excessive regularization can cause the model to underperform and reduces the predictive accuracy of the model. Again I found that for the best results, it is best to use a lower penalty value for the ridge regression model.
+
+### Elastic Net Model
+
+![The trend of elastic net tuning parameters on the simple linear regression recipe. RSQ decreases with the increase in amount of regulation, and also decreases with the increase in the proportion of lasso penalty.](figures/elastic_autoplot.jpg){#fig-elastic-autoplot}
+
+The autoplot in @fig-elastic-autoplot illustrates the relationship between the tuning parameters of the elastic net model, **penalty** (amount of regularization) and **mixture** (proportion of the lasso penalty), and the resulting model performance, measured by R-squared (RSQ). As the penalty increases, the RSQ value also decreases, meaning the model's performance worsens with higher penalty values. This could be because higher regularization reduces model complexity, which can lead to underfitting and lower predictive accuracy. Additionally, as the lasso proportion increases, RSQ also declines.  Pure lasso regularization may be too aggressive in feature selection, removing important predictors and leading to reduced model performance.
+
+![The trend of elastic net tuning parameters on the feature engineering recipe. RSQ decreases with the increase in amount of regulation, and also decreases with the increase in the proportion of lasso penalty.](figures/elastic_autoplot_fe.jpg){#fig-elastic-autoplot-fe}
+
+@fig-elastic-autoplot-fe displays the relationship between the tuning parameters of the elastic net model with feature engineering, **penalty** (amount of regularization) and **mixture** (proportion of the lasso penalty), and the resulting model performance, measured by R-squared (RSQ). This model performed very similarly to the elastic net model with the simple linear regression recipe. The increase in regularization decreased model performance, specifically for models with a higher proportion of lasso penalty. This leads me to believe that for both models, a smaller amount of regularization and a smaller proportion of lasso penalty will yield the best prediction results.
+
+### Nearest Neighbor Model
+
+![The trend of nearest neighbor tuning parameters on the simple tree recipe. RSQ increases as the number of neighbors increases until around 15 neighbors, when the RSQ begins to decrease.](figures/kknn_autoplot.jpg){#fig-kknn-autoplot}
+
+The tuning results for the nearest neighbor model on the simple tree recipe in @fig-kknn-autoplot shows that RSQ increases as the number of neighbors grows, reaching its peak around 15 neighbors. Beyond this point, RSQ begins to decline, indicating a decrease in model performance and prediction accuracy. This trend reflects the diminishing returns in the number of neighbors. With too few neighbors, the model exhibits high variance, leading to potential overfitting. As the number of neighbors increases, the model improves predictions by incorporating more data points, improving generalization and increasing RSQ. However, once the number of neighbors surpasses an optimal threshold (around 15 for my model), the model starts to lose important local patterns, causing RSQ and prediction accuracy to decrease.
+
+
+![The trend of nearest neighbor tuning parameters on the feature engineering tree recipe. RSQ increases as the number of neighbors increases until around 15 neighbors, when the RSQ begins to decrease.](figures/kknn_autoplot_fe.jpg){#fig-kknn-autoplot-fe}
+
+
+@fig-kknn-autoplot-fe is very similar to the plot for the nearest neighbor model fit with the peak performance of the model occurring at 15 neighbors. The increase in neighbors improves model performance until we see the diminishing returns of too many neighbors after the value of 15. This leads me to believe that the best model hyperparameter for both nearest neighbor models is a neighbor value of 15.
+
+
+### Random Forest Model
+
+![The trends of random forest tuning parameters on the simple tree recipe. RSQ increases with the decrease in minimum node size (min_n), and increase of randomly selected predictors (mtry). RSQ seems to be consistent across number of trees, with only slight improvements as tree number increases.](figures/rf_autoplot.jpg){#fig-rf-autoplot}
+
+@fig-rf-autoplot shows the relationship between the tuning parameters of the random forest model with simple tree recipe, **min_n** (minimum node size), **mtry** (number of randomly selected predictors), and **trees** (number of decision trees). It appears as though minimal node size does not play a large impact on the RSQ value as all the graphs appear to have the same RSQ of around 0.975. Additionally, the trees value does not seem to increase RSQ, as all the lines for different tree values overlap. The hyperparameter that seems to have the biggest effect on RSQ is mtry, which improves model performance as it increases. Overall, it seems as though a lower min_n value and a larger trees/mtry value will result in the highest prediction accuracy. 
+
+![The trends of random forest tuning parameters on the feature engineering tree recipe. RSQ increases with the decrease in minimum node size (min_n), and increase of randomly selected predictors (mtry). RSQ seems to be consistent across number of trees, with only slight improvements as tree number increases.](figures/rf_autoplot_fe.jpg){#fig-rf-autoplot-fe}
+
+@fig-rf-autoplot-fe illustrates the trends for the random forest model using the feature engineering tree recipe. This plot looks almost identical to the random forest using the simple tree recipe and has the same trends. Minimal node size and tree number does not appear to have a huge impact, but the RSQ value increases as the number of randomly selected predictors increases. This means the best model for the feature engineering recipe is the model with a lower min_n and higher trees/mtry value. 
+
+### Boosted Tree Model
+
+![The trends of boosted tree tuning parameters on the simple tree recipe. RSQ increases and maintains consistency as learning rate increases, with the highest learning rate appearing at 0.0398. RSQ also improves with an increase of randomly selected predictors (mtry) and appears to be consistent across number of trees for the upper mtry levels.](figures/bt_autoplot.jpg){#fig-bt-autoplot}
+
+@fig-bt-autoplot shows the relationship between the tuning parameters of the boosted tree model with simple tree recipe, **min_n** (minimum node size), **mtry** (number of randomly selected predictors), and **trees** (number of decision trees), and **learn rate**. It appears as though a lower minimal node size value leads to higher RSQ, especially when coupled with the learn rate value of 0.0398 - we see that in every graph the learning rate value of 0.0398 produces the best RSQ values. Additionally, the trees value does not seem to have a large impact on model performance, except at the lower number of randomly selected predictors where we can see some of the lines separating from each other. However, the trees value does not seem to change at the higher values for number of randomly selected predictors, so I do not believe they have a large impact. The most important hyperparameter to produce the best prediction accuracy appears to be the number of randomly selected predictors, as more predictors oftentimes means more data to produce accurate results. Overall, it seems as though a lower min_n value and a larger trees/mtry value will result in the highest prediction accuracy when paired with a learning rate of 0.0398.
+
+![The trends of boosted tree tuning parameters on the feature engineering recipe. RSQ increases and maintains consistency as learning rate increases, with the highest learning rate appearing at 0.0398. RSQ also improves with an increase of randomly selected predictors (mtry) and appears to be consistent across number of trees for the upper mtry levels.](figures/bt_autoplot_fe.jpg){#fig-bt-autoplot-fe}
+
+@fig-bt-autoplot-fe is very similar to the plot for the boosted tree model using the simple tree recipe. As the number of randomly selected predictors increases, the RSQ value increases as well, leading me to believe that high mtry value improves predictive accuracy with this model. Additionally, the number of trees does not seem to significantly impact RSQ values above a value of 8 randomly selected predictors, so they do not play a large role in the performance of my model. The minimal node size seems to be marginally better at a lower value, such as 2 or 4, but it is hard to tell from this plot directly. The learn rate seems to be best at 0.0398 across all minimal node sizes and produce the highest RSQ value. The best hyperparameters appear to be lower minimal node size, more trees, a higher number of randomly selected predictors, and a learn rate of 0.0398.
+
