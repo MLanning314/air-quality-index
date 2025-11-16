@@ -1,0 +1,200 @@
+---
+title: "Progress Memo 2"
+subtitle: |
+  | Final Project 
+  | Data Science 2 with R (STAT 301-2)
+author: "Mackenzie Lanning"
+pagetitle: "PM2 Mackenzie Lanning"
+date: today
+
+format:
+  html:
+    toc: true
+    embed-resources: true
+    
+execute:
+  warning: false
+
+from: markdown+emoji 
+reference-location: margin
+citation-location: margin
+---
+
+::: {.callout-tip icon=false}
+
+## Github Repo Link
+
+[Lanning_Mackenzie_Progress_Memo_1](https://github.com/stat301-2-2025-winter/final-project-2-MLanning314)
+
+:::
+
+```{r}
+#| label: load-packages
+#| echo: false
+library(tidymodels)
+library(tidyverse)
+library(here)
+```
+
+
+## Prediction Problem
+My prediction objective is to predict the Air Quality Index (AQI) of various cities in India given the concentration of several pollutants. The data for this problem is provided by a Kaggle dataset that compiles data from different stations in Indian cities over a five year period.^[[Air Quality Data in India (2015 - 2020) --- https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india?select=city_day.csv)](https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india?select=city_day.csv)] The AQI is calculated by converting the concentration of pollutants to different values based on the impact to human health - this then converts to an AQI value on a scale of 0-500. My dataset provides an abundance of pollutants that are not always measured to calculate the AQI, so I want to use these as predictors to see if that impacts the prediction accuracy of my model. 
+
+## Assessment Metric
+My main assessment metric will be RSQ, which is a statistical measure used to assess how well a model explains the variance of the target variable. In other words, it determines how well the predictors in the dataset can explain the variability in my target variable. I chose this metric because it is easier to conceptualize than RMSE, which varies from dataset to dataset. I prefer understanding how well my models are predicting on a 0-1 scale. However, I also plan to look at RMSE when determining the best model for my prediction problem, and I want to make use of graphs to visualize which models are predicting best. 
+
+## Analysis Plan
+### Data Tidying
+To begin the modeling process, I needed to clean the dataset to ensure it was suitable before proceeding to data splitting. All the data cleaning and tidying was conducted in the `0_data_tidying` R script. I began by inspecting the missingness and distribution of the target variable. The dataset had relatively significant missingness for each variable - I began by removing the missing variables for my target variable `aqi`, as there were only 10% of observations missing and were oftentimes missing when there was also missingness for various predictors, so this helped the missingness problem overall. Then I removed every variable that had missingness over 75%, which was only the `xylene` variable. For the numeric missing observations, I chose to impute these values during the recipe process. The distribution of my target variable had a large right skew, so I used a log10 transformation to improve the distribution for modeling. This resulted in a slight bimodality, but this did not appear to impact prediction accuracy. Finally, I made the variable `aqi_category` an ordered factor rather than a numeric variable, as it is a categorical translation of the numeric AQI value, which I felt would work best as a factor. 
+
+### Data Splitting
+In the `1_initial_setup` R script, I split the data after cleaning the data. I used an 80/20 split, as I felt that would leave enough observations in both categories while maintaining a reasonable ratio for predictive modeling - this left me with around 20,000 rows of training data and 5,000 rows of testing data. I also stratified by the target variable, `log10_aqi` because I wanted to ensure an equal representation of all values.
+
+Then, I conducted a v-fold cross-validation that included 10 folds with 5 repeats that was then saved under the new dataset `air_folds`. I chose this number because I felt 10 folds with 5 repeats is standard for machine learning and could improve the performance of my model without diminishing returns and significant time consumption when running models. 
+
+### Recipes 
+I have created five recipes for my various model needs under the R script `2_recipes`
+
+The first recipe is for the null model, which includes a very basic recipe that only provides enough instruction for the model to work. I left out imputation steps and did not provide any interactions or feature engineering to the recipe. The recipe had three steps:
+
+- remove the `date` variable - partially because it did not necessarily impact the prediction outcome, and partially because date/time variables are hard to work with in models
+- converte the factor or character variables into binary columns aka creating dummy variables
+- normalize numeric variables by scaling them to have a mean of 0 and a standard deviation of 1, otherwise known as standardization
+
+I then created two recipes for linear regression models: one basic "kitchen sink" recipe, and one feature engineered recipe. The kitchen sink recipe was very similar to the null model recipe, but I included a few more steps to make the prediction more accurate and maintain variables with minor missingness - the additional steps were:
+
+- impute the missing numeric values in the dataset by replacing them with the median value of the observations already given
+- impute the missing categorical variables in the dataset by replacing them with the mode of the observations already given
+
+The feature engineered recipe contains all the steps above, but involved some interactions between variables to see if that would improve prediction accuracy. The goal of this recipe is to use feature engineering on a linear recipe to try and capture relationships between variables that the model may not detect on its own. The interactions I used include:
+
+- an interaction between `pm2_5` and `pm10` because they are both different measurements of particulate matter concentration (differ by the size of the particulate matter). I wanted to see if the increase in one specific type of particulate matter had an impact on the other, and see if that led to a more accurate prediction of AQI value
+- an interaction between `no` and `no2`, which are both different forms of nitrous oxides - I was curious to see if their concentration rose and fell together, which could be indicative of different sources that promote the formation of nitrous oxides in general, not just nitrous monoxide or nitrous dioxide
+- an interaction between `so2` and `co` because they are both very significant pollutants that negatively impact human health, but are not necessarily found in high concentrations at the same time
+- an interaction between `benzene` and `toulene` because benzene had no correlation with any variable except toulene, which intrigued me as to how they may be related in the context of this prediction problem
+- an interaction between `o3` and `no2` because ground ozone and nitrogen dioxide are the leading causes of smog that surrounds cities, but they create different kinds of smog, so I wanted to see how their relationship impacts AQI 
+
+The final two recipes are for tree models, one being a simple tree model and one being a feature engineered tree model. They are the exact same as above, but they involve one additional step:
+
+- one-hot encoding the categorical variables to improve the performance of decision trees by creating simpler, binary categorical variables rather than ordered factors with lots of categories. 
+
+Other than that, they involve the same steps and interactions detailed above.
+
+
+### Model Types
+I created and fitted my models for the project under various R scripts with the prefix `3_`
+
+I decided to create two "baseline" models to try and compare the performance of simple linear regression model with a complete null model. These are found under `3_fit_null` and `3_fit_baseline` respectively. The null model was created using the null recipe, and fitted to the `air_folds` dataset. Similarly, the simple linear regression model was created using the kitchen sink recipe and fitted to the `air_folds` dataset.
+
+Then, I created a simple tuned ridge model without feature engineering (`3_tune_ridge`) and with feature engineering (`3_tune_ridge_2`). I chose a ridge model because I wanted a simple regression model that I am familiar with from the labs we've done this quarter. This model can also handle multicollinearity, which is not necessarily present in my predictors, but I did leave in some variables with high correlation to the outcome variable, so this was a preventative measure. This model used the hyperparameter tuning process, but I did not change the default hyperparameters. 
+
+Next, I created two elastic net models, one without feature engineering (`3_tune_elastic`) and one with feature engineering (`3_tune_elastic_2`). I chose an elastic net model because I was worried some of my predictors may be highly correlated, which can be dealt with well using an elastic net model. Additionally, it combines two types of models I am familiar with from the quarter, the ridge and lasso regression models. This model provides a balance between feature selection and coefficient shrinkage, which I want to help improve my prediction accuracy. This model utilized the hyperparameter tuning process, although I did not feel the need to adjust any of the default hyperparameters for this specific model. 
+
+I also created a nearest neighbor model without feature engineering (`3_tune_kknn`) and with feature engineering (`3_tune_kknn_2`). I chose this model because is one of the simplest and most intuitive algorithms to understand - it doesn’t require any complex assumptions about the data distribution or relationships between predictors and target variables. I thought this would be a good way to get a general prediction without needing the model to understand everything about my dataset/target variable. This model utilized the hyperparameter tuning process, although I did not feel the need to adjust any of the default hyperparameters for this specific model. 
+
+I created a random forest model without feature engineering (`3_tune_rf`) and with feature engineering (`3_tune_rf_2`). I wanted to use a decision tree model because on our labs it is oftentimes the best at predicting regression problems, so I wanted to determine if this was the best model for me to use. Additionally, random forest models tend to provide very high predictive accuracy compared to other models and it can handle large datasets well, which works with my large number of observations. This model utilized the hyperparameter tuning process and I changed the hyperparameter values to better fit our dataset and prediction problem. I changed the mtry range from 1-10 because I do not have a large amount of predictors and wanted to keep the number of randomly selected predictors on the lower side for computational time. I also changed the number of trees to range from 250-500 for the same reason - the dataset is large and I used 10 folds with 5 repeats, so any larger than 500 trees may take a long time to run and have diminishing returns on the model. 
+
+Finally, I created a boosted tree model without feature engineering (`3_tune_bt`) and with feature engineering (`3_tune_bt_2`). This model is similar to random forest as it also uses a decision tree system to predict values. I chose this model for the same reasons I chose random forest: it has high predictive accuracy and can handle large datasets well. This model utilized the hyperparameter tuning process and I changed the hyperparameter values to better fit our dataset and prediction problem. I changed the mtry and trees values to be the same as random forest, and I also changed the learn rate to be -5 to -0.2 on the log scale. This is to improve model stability by curbing learn rate to a reasonable scale - it is also small enough that the accuracy of the model should not be impacted, but large enough that it does not take significant computational time. 
+
+## Model Comparison
+My initial two models, the null model and the baseline simple linear regression model, were compared in the R script `4_model_analysis`. I have provided a table that includes the RMSE from my baseline model and logistic model here to prove my fits are successful (I used RMSE for this specific comparison because RSQ is not suitable for a null model)
+
+```{r tbl-model-comparison}
+#| label: tbl-model-comparison
+#| echo: false
+#| tbl-cap: "Comparison of RMSE Values for Baseline Linear Regression and Null Models"
+load(here("results/fit_null.rda"))
+load(here("results/fit_baseline.rda"))
+
+# obtain null model performance metrics
+null_metrics <- fit_null |>
+  collect_metrics() |>
+  mutate(model = "Null Model") |>
+  filter(.metric == "rmse")
+
+
+# obtain baseline linear regression performance metrics
+baseline_metrics <- fit_baseline |>
+  collect_metrics() |>
+  mutate(model = "Simple Linear Regression Model") |>
+  filter(.metric == "rmse")
+
+
+# create null model table
+tbl_null <- null_metrics |>
+  select(mean, n, std_err) |>
+  mutate(model = "Null",
+         recipe = "Null") 
+
+# create baseline simple linear regression model table
+tbl_baseline <- baseline_metrics |>
+  select(mean, n, std_err) |>
+  mutate(model = "Simple Linear Regression",
+         recipe = "Linear/Kitchen Sink")
+
+results_table <- bind_rows(tbl_baseline, tbl_null)
+
+results_table |>
+  knitr::kable(col.names = c("Mean", "n", "Standard Error", "Model", "Recipe"))
+```
+As seen in @tbl-model-comparison, the baseline linear regression model performs much better than the null model. The average RMSE value for the simple linear regression model is 0.0570, while the average RMSE for the null model is 0.293. This is a pretty large difference, especially on a log scale. Additionally, the standard error is lower for the linear regression model, which further proves that is performs better in terms of accuracy. However, this does not demonstrate if more complex models are worthwhile, as the difference between the null model and the baseline model is significant, but I am interested to see how the baseline model compares to other models. 
+
+```{r tbl-model-comparison-2}
+#| label: tbl-model-comparison-2
+#| echo: false
+#| tbl-cap: "Mean RSQ Value for Various Models"
+
+load(here("results/fit_baseline.rda"))
+load(here("results/elastic_tuned.rda"))
+load(here("results/rf_tuned.rda"))
+load(here("results/bt_tuned.rda"))
+
+# obtain baseline linear regression performance metrics
+baseline_metrics <- fit_baseline |>
+  collect_metrics() |>
+  mutate(model = "Simple Linear Regression Model") |>
+  filter(.metric == "rsq")
+
+# create baseline simple linear regression model table
+tbl_baseline <- baseline_metrics |>
+  select(mean, n, std_err) |>
+  mutate(model = "Simple Linear Regression",
+         recipe = "Linear/Kitchen Sink")
+
+# create elastic model table
+tbl_elastic <- show_best(elastic_tuned, metric = "rsq", n=1) |>
+  slice_max(mean) |>
+  select(mean, n, std_err) |>
+  mutate(model = "Elastic Net", 
+         recipe = "Linear/Kitchen Sink")
+
+# create random forest table
+tbl_rf <- show_best(rf_tuned, metric = "rsq") |>
+  slice_max(mean) |>
+  select(mean, n, std_err) |>
+  mutate(model = "Random Forest", 
+         recipe = "Tree Recipe")
+
+# create boosted tree table
+tbl_bt <- show_best(bt_tuned, metric = "rsq") |>
+  slice_max(mean) |>
+  select(mean, n, std_err) |>
+  mutate(model = "Boosted Tree", 
+         recipe = "Tree Recipe")
+
+results_table2 <- bind_rows(tbl_baseline, tbl_elastic, tbl_rf, tbl_bt)
+
+results_table2 |>
+  knitr::kable()
+```
+@tbl-model-comparison-2 shows that more complex models may not be worth it in terms of prediction accuracy. While I do believe an RSQ value of 0.995 is a very good indicator of a strong model, it is only around 3% higher than the baseline linear regression model of 0.962. I am certain that the boosted tree model would provide more accurate predictions, but when you factor in the computational time and effort, the baseline RSQ is likely sufficient for most prediction problems.
+
+## Next Steps
+I plan on compiling the final report and working through different sections of the final project. I also want to conduct a proper model analysis so I can determine the best model for prediction accuracy and fit it to the whole training set/test it on the testing set. Then, I would like to visualize my predicted vs actual values on various graphs to show the predictions in a different way.
+
+I would appreciate any feedback you may have!
+
+## Potential Issues
+I was initially concerned that certain pollutants would be a multicollinearity issue and cause optimistic predictions from my model, but upon further analysis, I only found two predictors that had higher than 60% correlation with the target variable `aqi` - `pm2_5` and `pm10`. This makes sense because particulate matter is oftentimes the pollutant that has the biggest impact on human health, and so it is most largely considered when determining the AQI value^[[Inhalable Particulate Matter --- https://ww2.arb.ca.gov/resources/inhalable-particulate-matter-and-health)](https://ww2.arb.ca.gov/resources/inhalable-particulate-matter-and-health)]. However, when I removed these variables from the recipe, the model's RSQ value did not change. This led me to the determination that these predictors did not impact my model negatively or positively, so I left them in.
+
+I have also had issues with computational time - the models are taking a while to run, which can be hard when I need to use my computer for other classes. This is more of an annoyance than an issue though.
