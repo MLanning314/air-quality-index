@@ -1,0 +1,125 @@
+---
+title: "Progress Memo 1"
+subtitle: |
+  | Final Project 
+  | Data Science 2 with R (STAT 301-2)
+author: "Mackenzie Lanning"
+pagetitle: "PM1 Mackenzie Lanning"
+
+format:
+  html:
+    toc: true
+    embed-resources: true
+    
+execute:
+  warning: false
+
+from: markdown+emoji 
+reference-location: margin
+citation-location: margin
+---
+
+::: {.callout-tip icon=false}
+
+## Github Repo Link
+
+[Lanning_Mackenzie_Progress_Memo_1](https://github.com/stat301-2-2025-winter/final-project-2-MLanning314)
+
+:::
+
+
+## Prediction Problem
+My prediction objective is to predict the Air Quality Index value across various cities in India. With an increase in climate change and pollution levels, this prediction problem is crucial for public health, environmental protection, and policy-making. India faces severe air pollution challenges, particularly in urban areas, which have some of the highest pollution levels globally. Accurate predictions of AQI allow for early warnings and enable residents to take preventive measures, such as limiting outdoor activities or using air purifiers, thereby reducing exposure to harmful pollutants like particulate matter (PM2.5 and PM10), nitrogen oxides, and sulfur dioxide. Additionally, reliable AQI predictions help inform governmental and regulatory decisions, such as issuing advisories, formulating air quality standards, and implementing targeted interventions to improve air quality. By understanding and forecasting AQI trends, India can better address the long-term health impacts of air pollution, reduce healthcare costs, and create more sustainable cities for its growing population. 
+
+This is a regression prediction problem, as the outcome variable I want to predict is continuous on a numeric scale. I am personally interested in this project as I am an environmental science major with a particular interest in environmental chemistry, specifically pertaining to air pollutants. I hope that analyzing this dataset will give me practical R knowledge in a field I would like to enter into after graduation. 
+
+
+## Data Source
+
+My dataset is an Air Quality Index Dataset^[[Air Quality Data in India (2015 - 2020) --- https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india?select=city_day.csv)](https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india?select=city_day.csv)] from Kaggle, created by Vopani. It includes very in-depth data on the Air Quality Index (AQI) of various cities throughout India, including data about the levels of specific pollutants. The data has 16 variables with 29,500 observations - these variables include 2 character variables, one date/time variable, and 13 numeric variables.
+
+
+
+## Data Quality Check
+
+```{r}
+#| label: load-packages
+#| echo: false
+
+# load packages
+library(tidyverse)
+library(here)
+```
+
+```{r}
+#| label: load-data
+#| echo: false
+# load in data
+air_data <- read_csv("/Users/mackenzielanning/Downloads/Northwestern/Winter 2025/STAT 301-2.nosync/Final Project/final-project-2-MLanning314/data/city_day.csv") |>
+  janitor::clean_names()
+```
+```{r}
+#| label: data-complexity-check
+#| echo: false
+# check dimensions of the dataset
+dim(air_data)
+
+# summary of dataset
+skimr::skim_without_charts(air_data)
+```
+The `air_data` dataset has 29531 observations, and 16 variables. For this raw data, there are two categorical variables, with both being character variables: `city` and `aqi_bucket`. There is one date/time variable: `date`. There are 13 numeric variables that measure the concentration of pollutants in the air: `pm2_5`, `pm10`, `no`, `no2`, `n_ox`, `nh3`, `co`, `so2`, `o3`, `benzene`, `toulene`, and `xylene` - there is one numeric variable that is the direct measurement of the AQI - `aqi`. I will likely convert `aqi_bucket` to an ordered factor, as it seems it would function better as a factor than a character. 
+
+There are some missingness issues for all of the variables in the dataset aside from the observations for `city` and `aqi_bucket`, which have 0 missingness. There is minor missingness for the variables `no`, `no2`, `n_ox`, `co`, `so2`, `o3` - all of these variables have more than 85% of their observations maintained and will not significantly impact my prediction model. There is moderate missingness for the variables `toulene`, `benzene`, `aqi`, and `aqi_bucket` - these variables have over 70% of their observations, which is still not enough to impact the prediction model, so I plan on leaving these variables in. There is significant missingness for the variables `pm10`, `nh3`, and `xylene` - these variables have less than 70% of their observations and need to be handled before I can proceed with predicion modeling. As my target variable is `aqi`, I plan on removing the missing observations to bring the missingness down to zero - this will also cause `aqi_bucket` to have zero missingness as well. Once I remove these 4681 observations, it is likely that observations from variables with significant missingness will also be removed too, leading to an increase in completion rate - this will make them suitable for prediction modeling. In terms of missing observations after the removal of AQI missingness, I plan on using impute functions in the recipe process to estimate the NA values so they will not have an impact on prediction accuracy.
+
+There are not an overwhelming amount of interesting/weird values, but the maximum values for the concentration of different pollutants is very large. This is not unreasonable, but just shocking as to how polluted different cities in India have been on any given day. There are also very low values for the minimum pollutant concentration, which goes to show that not all cities are struggling with the same pollution issues as others. Other than those observations, the values seem reasonable, and I feel comfortable proceeding with the data.
+
+
+## Target Variable Analysis
+
+I will now conduct a short analysis on my potential target variable: `aqi`
+
+```{r}
+#| label: figure-1
+#| echo: false
+#| eval: false
+progress_memo_1_fig_1 <- ggplot(air_data, aes(x = aqi)) +
+  geom_density() +
+  theme_minimal() +
+  labs(title = "Distribution of AQI Variable",
+       x = "AQI",
+       y = "Density")
+
+ggsave("memo_figures/progress_memo_1_fig_1.png", plot = progress_memo_1_fig_1)
+
+```
+![Distribution of the AQI Variable](memo_figures/progress_memo_1_fig_1.png){#fig-1}
+
+As seen in @fig-1, my target variable has a significant right skew and will likely need a transformation. A skewed target variable can negatively impact a prediction model by causing bias and overprediction, so I will perform a log10 transformation on the target variable to see if that helps the distribution at all.
+
+```{r}
+#| label: fig-2
+#| echo: false
+#| eval: false
+progress_memo_1_fig_2 <- ggplot(air_data, aes(x = log10(aqi))) +
+  geom_density() +
+  theme_minimal() +
+  labs(title = "Distribution of AQI Variable",
+       x = "AQI (Log10)",
+       y = "Density")
+
+ggsave("memo_figures/progress_memo_1_fig_2.png", plot = progress_memo_1_fig_2)
+```
+
+![Distribution of the AQI Variable with a Log Distribution](memo_figures/progress_memo_1_fig_2.png){#fig-2}
+
+The log10 transformation appears to improve the target variable distribution, as seen in @fig-2. There is a small degree of bimodality, but I do not think this will significantly impact the prediction model outcome. I plan on using this transformation when predicting my values, and then I can convert the values back to their original AQI value after they have been predicted by the model. 
+
+
+
+
+## Misc
+
+I would love any criticism and feedback about this project! Pending approval, I will start with fitting the model and creating a recipe for this problem shortly.
+
+## Citation
+Air Quality Data in India (2015 - 2020). (2020). [Dataset]. Kaggle. [https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india?select=city_day.csv](https://www.kaggle.com/datasets/rohanrao/air-quality-data-in-india?select=city_day.csv)
